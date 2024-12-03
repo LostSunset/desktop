@@ -82,7 +82,7 @@ function showConfirmReset(configFilePath: string): Promise<Electron.MessageBoxRe
   });
 }
 
-async function tryDeleteConfigFile(configFilePath: string) {
+async function tryDeleteConfigFile(configFilePath: string): Promise<void> {
   try {
     await fs.rm(configFilePath);
   } catch (error) {
@@ -91,7 +91,7 @@ async function tryDeleteConfigFile(configFilePath: string) {
   }
 }
 
-function getUserDataOrQuit() {
+function getUserDataOrQuit(): string {
   try {
     return app.getPath('userData');
   } catch (error) {
