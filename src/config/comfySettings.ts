@@ -21,6 +21,8 @@ export interface ComfySettingsData {
 
 /**
  * ComfySettings is a class that loads settings from the comfy.settings.json file.
+ * 
+ * No save or write methods are exposed; this file is exclusively written to by ComfyUI core.
  */
 export class ComfySettings {
   public readonly filePath: string;
@@ -41,9 +43,5 @@ export class ComfySettings {
 
   get<K extends keyof ComfySettingsData>(key: K): ComfySettingsData[K] {
     return this.settings[key] ?? DEFAULT_SETTINGS[key];
-  }
-
-  set<K extends keyof ComfySettingsData>(key: K, value: ComfySettingsData[K]) {
-    this.settings[key] = value;
   }
 }
