@@ -1,4 +1,4 @@
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 import log from 'electron-log/main';
 
@@ -21,6 +21,8 @@ export interface ComfySettingsData {
 
 /**
  * ComfySettings is a class that loads settings from the comfy.settings.json file.
+ *
+ * No save or write methods are exposed; this file is exclusively written to by ComfyUI core.
  */
 export class ComfySettings {
   public readonly filePath: string;
@@ -30,20 +32,22 @@ export class ComfySettings {
     this.filePath = path.join(basePath, 'user', 'default', 'comfy.settings.json');
   }
 
-  public loadSettings() {
-    if (!fs.existsSync(this.filePath)) {
+  public async loadSettings() {
+    try {
+      await fs.access(this.filePath);
+    } catch {
       log.info(`Settings file ${this.filePath} does not exist. Using default settings.`);
       return;
     }
-    const fileContent = fs.readFileSync(this.filePath, 'utf-8');
-    this.settings = JSON.parse(fileContent);
+    try {
+      const fileContent = await fs.readFile(this.filePath, 'utf-8');
+      this.settings = JSON.parse(fileContent);
+    } catch (error) {
+      log.error(`Settings file cannot be loaded.`, error);
+    }
   }
 
   get<K extends keyof ComfySettingsData>(key: K): ComfySettingsData[K] {
     return this.settings[key] ?? DEFAULT_SETTINGS[key];
-  }
-
-  set<K extends keyof ComfySettingsData>(key: K, value: ComfySettingsData[K]) {
-    this.settings[key] = value;
   }
 }
