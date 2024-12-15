@@ -5,6 +5,8 @@ import { AppWindowSettings } from '../store';
 import log from 'electron-log/main';
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
 import { getAppResourcesPath } from '../install/resourcePaths';
+import { useDesktopConfig } from '../store/desktopConfig';
+import type { ElectronContextMenuOptions } from '../preload';
 
 /**
  * Creates a single application window that displays the renderer and encapsulates all the logic for sending messages to the renderer.
@@ -12,19 +14,25 @@ import { getAppResourcesPath } from '../install/resourcePaths';
  */
 export class AppWindow {
   private window: BrowserWindow;
+  /** Volatile store containing window config - saves window state between launches. */
   private store: Store<AppWindowSettings>;
-  private messageQueue: Array<{ channel: string; data: any }> = [];
+  private messageQueue: Array<{ channel: string; data: unknown }> = [];
   private rendererReady: boolean = false;
+  /** The application menu. */
+  private menu: Electron.Menu | null;
+  /** The "edit" menu - cut/copy/paste etc. */
+  private editMenu?: Menu;
 
   public constructor() {
+    const installed = useDesktopConfig().get('installState') === 'installed';
     const primaryDisplay = screen.getPrimaryDisplay();
-    const { width, height } = primaryDisplay.workAreaSize;
+    const { width, height } = installed ? primaryDisplay.workAreaSize : { width: 1024, height: 768 };
     const store = this.loadWindowStore();
     this.store = store;
 
     // Retrieve stored window size, or use default if not available
-    const storedWidth = store.get('windowWidth', width) ?? width;
-    const storedHeight = store.get('windowHeight', height) ?? height;
+    const storedWidth = store.get('windowWidth', width);
+    const storedHeight = store.get('windowHeight', height);
     const storedX = store.get('windowX');
     const storedY = store.get('windowY');
 
@@ -32,8 +40,8 @@ export class AppWindow {
       title: 'ComfyUI',
       width: storedWidth,
       height: storedHeight,
-      minWidth: 480,
-      minHeight: 360,
+      minWidth: 640,
+      minHeight: 640,
       x: storedX,
       y: storedY,
       webPreferences: {
@@ -46,20 +54,22 @@ export class AppWindow {
       autoHideMenuBar: true,
     });
 
+    if (!installed && storedX === undefined) this.window.center();
     if (store.get('windowMaximized')) this.window.maximize();
 
     this.setupWindowEvents();
     this.setupAppEvents();
     this.sendQueuedEventsOnReady();
     this.setupTray();
-    this.buildMenu();
+    this.menu = this.buildMenu();
+    this.buildTextMenu();
   }
 
   public isReady(): boolean {
     return this.rendererReady;
   }
 
-  public send(channel: string, data: any): void {
+  public send(channel: string, data: unknown): void {
     if (!this.isReady()) {
       this.messageQueue.push({ channel, data });
       return;
@@ -93,8 +103,9 @@ export class AppWindow {
     });
   }
 
-  public loadComfyUI(serverArgs: ServerArgs) {
-    this.window.loadURL(`http://${serverArgs.host}:${serverArgs.port}`);
+  public async loadComfyUI(serverArgs: ServerArgs) {
+    const host = serverArgs.host === '0.0.0.0' ? 'localhost' : serverArgs.host;
+    await this.window.loadURL(`http://${host}:${serverArgs.port}`);
   }
 
   public openDevTools(): void {
@@ -121,6 +132,10 @@ export class AppWindow {
     this.window.focus();
   }
 
+  public maximize(): void {
+    this.window.maximize();
+  }
+
   public async loadRenderer(urlPath: string = ''): Promise<void> {
     if (process.env.DEV_SERVER_URL) {
       const url = `${process.env.DEV_SERVER_URL}/${urlPath}`;
@@ -131,7 +146,7 @@ export class AppWindow {
     } else {
       const appResourcesPath = getAppResourcesPath();
       const frontendPath = path.join(appResourcesPath, 'ComfyUI', 'web_custom_versions', 'desktop_app');
-      this.window.loadFile(path.join(frontendPath, 'index.html'), { hash: urlPath });
+      await this.window.loadFile(path.join(frontendPath, 'index.html'), { hash: urlPath });
     }
   }
 
@@ -217,6 +232,14 @@ export class AppWindow {
     });
   }
 
+  showSystemContextMenu(options?: ElectronContextMenuOptions): void {
+    if (options?.type === 'text') {
+      this.editMenu?.popup(options.pos);
+    } else {
+      this.menu?.popup(options?.pos);
+    }
+  }
+
   setupTray() {
     // Set icon for the tray
     // I think there is a way to packaged the icon in so you don't need to reference resourcesPath
@@ -225,7 +248,7 @@ export class AppWindow {
       'UI',
       process.platform === 'darwin' ? 'Comfy_Logo_x16_BW.png' : 'Comfy_Logo_x32.png'
     );
-    let tray = new Tray(trayImage);
+    const tray = new Tray(trayImage);
 
     tray.setToolTip('ComfyUI');
 
@@ -270,6 +293,11 @@ export class AppWindow {
     return tray;
   }
 
+  buildTextMenu() {
+    // Electron bug - strongly typed to the incorrect case.
+    this.editMenu = Menu.getApplicationMenu()?.items.find((x) => x.role?.toLowerCase() === 'editmenu')?.submenu;
+  }
+
   buildMenu() {
     const menu = Menu.getApplicationMenu();
     if (menu) {
@@ -299,5 +327,6 @@ export class AppWindow {
         Menu.setApplicationMenu(menu);
       }
     }
+    return menu;
   }
 }

@@ -1,3 +1,5 @@
+import type { GpuType, TorchDeviceType } from '../preload';
+
 export type AppWindowSettings = {
   windowWidth: number;
   windowHeight: number;
@@ -7,7 +9,7 @@ export type AppWindowSettings = {
 };
 
 export type DesktopSettings = {
-  basePath?: string;
+  basePath?: string | null;
   /**
    * The state of the installation.
    * - `started`: The installation has started.
@@ -16,4 +18,12 @@ export type DesktopSettings = {
    * in the yaml config.
    */
   installState?: 'started' | 'installed' | 'upgraded';
+  /**
+   * The last GPU that was detected during hardware validation.
+   * Allows manual override of some install behaviour.
+   */
+  detectedGpu?: GpuType;
+  /** The pytorch device that the user selected during installation. */
+  selectedDevice?: TorchDeviceType;
+  'Comfy-Desktop.RestoredCustomNodes': boolean;
 };

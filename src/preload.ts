@@ -12,12 +12,18 @@ const openFolder = async (folderPath: string) => {
   ipcRenderer.send(IPC_CHANNELS.OPEN_PATH, path.join(basePath, folderPath));
 };
 
+export type GpuType = 'nvidia' | 'mps' | 'unsupported';
+export type TorchDeviceType = GpuType | 'cpu';
+
 export interface InstallOptions {
+  /** Base installation path */
   installPath: string;
   autoUpdate: boolean;
   allowMetrics: boolean;
   migrationSourcePath?: string;
   migrationItemIds?: string[];
+  /** Torch compute device */
+  device?: TorchDeviceType;
 }
 
 export interface SystemPaths {
@@ -33,6 +39,11 @@ export interface DownloadProgressUpdate {
   progress: number;
   status: DownloadStatus;
   message?: string;
+}
+
+export interface ElectronContextMenuOptions {
+  type: 'system' | 'text' | 'image';
+  pos?: Electron.Point;
 }
 
 const electronAPI = {
@@ -138,11 +149,8 @@ const electronAPI = {
    * @param error The error object or message to send
    * @param extras Optional additional context/data to attach
    */
-  sendErrorToSentry: (error: string, extras?: Record<string, any>) => {
-    return ipcRenderer.invoke(IPC_CHANNELS.SEND_ERROR_TO_SENTRY, {
-      error: error,
-      extras,
-    });
+  sendErrorToSentry: (error: string, extras?: Record<string, unknown>) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.SEND_ERROR_TO_SENTRY, { error, extras });
   },
   Terminal: {
     /**
@@ -214,6 +222,32 @@ const electronAPI = {
    */
   installComfyUI: (installOptions: InstallOptions) => {
     ipcRenderer.send(IPC_CHANNELS.INSTALL_COMFYUI, installOptions);
+  },
+  /**
+   * Opens native context menus.
+   *
+   * {@link ElectronContextMenuOptions} contains the various options to control the menu type.
+   * @param options Define which type of menu to use, position, etc.
+   */
+  showContextMenu: (options?: ElectronContextMenuOptions): void => {
+    return ipcRenderer.send(IPC_CHANNELS.SHOW_CONTEXT_MENU, options);
+  },
+  Config: {
+    /**
+     * Finds the name of the last detected GPU type.  Detection only runs during installation.
+     * @returns The last GPU detected by `validateHardware` - runs during installation
+     */
+    getDetectedGpu: async (): Promise<GpuType | undefined> => {
+      return await ipcRenderer.invoke(IPC_CHANNELS.GET_GPU);
+    },
+  },
+  /** Restart the python server without restarting desktop. */
+  restartCore: async (): Promise<void> => {
+    console.log('Restarting core process');
+    await ipcRenderer.invoke(IPC_CHANNELS.RESTART_APP);
+  },
+  getPlatform: (): NodeJS.Platform => {
+    return process.platform;
   },
 } as const;
 

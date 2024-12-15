@@ -1,5 +1,5 @@
 import { IPC_CHANNELS, DEFAULT_SERVER_ARGS, ProgressStatus } from './constants';
-import { app, dialog, ipcMain } from 'electron';
+import { app, dialog, ipcMain, shell } from 'electron';
 import log from 'electron-log/main';
 import { findAvailablePort } from './utils';
 import dotenv from 'dotenv';
@@ -38,19 +38,27 @@ if (!gotTheLock) {
   log.info('App already running. Exiting...');
   app.quit();
 } else {
-  app.on('ready', async () => {
+  app.on('ready', () => {
     log.debug('App ready');
 
-    const store = await DesktopConfig.load();
-    if (store) {
-      startApp();
-    } else {
-      app.exit(20);
-    }
+    startApp().catch((reason) => {
+      log.error('Unhandled exception in app startup', reason);
+      app.exit(2020);
+    });
   });
 }
 
 async function startApp() {
+  try {
+    const store = await DesktopConfig.load(shell);
+    if (!store) throw new Error('Unknown error loading app config on startup.');
+  } catch (error) {
+    log.error('Unhandled exception during config load', error);
+    dialog.showErrorBox('User Data', `Unknown error whilst writing to user data folder:\n\n${error}`);
+    app.exit(20);
+    return;
+  }
+
   try {
     const appWindow = new AppWindow();
     appWindow.onClose(() => {
@@ -73,26 +81,31 @@ async function startApp() {
       SentryLogging.comfyDesktopApp = comfyDesktopApp;
 
       const useExternalServer = process.env.USE_EXTERNAL_SERVER === 'true';
-      const host = process.env.COMFY_HOST || DEFAULT_SERVER_ARGS.host;
-      const targetPort = process.env.COMFY_PORT ? parseInt(process.env.COMFY_PORT) : DEFAULT_SERVER_ARGS.port;
-      const port = useExternalServer ? targetPort : await findAvailablePort(host, targetPort, targetPort + 1000);
       const cpuOnly: Record<string, string> = process.env.COMFYUI_CPU_ONLY === 'true' ? { cpu: '' } : {};
       const extraServerArgs: Record<string, string> = {
         ...comfyDesktopApp.comfySettings.get('Comfy.Server.LaunchArgs'),
         ...cpuOnly,
       };
+      const host = process.env.COMFY_HOST ?? extraServerArgs.listen ?? DEFAULT_SERVER_ARGS.host;
+      const targetPort = Number(process.env.COMFY_PORT ?? extraServerArgs.port ?? DEFAULT_SERVER_ARGS.port);
+      const port = useExternalServer ? targetPort : await findAvailablePort(host, targetPort, targetPort + 1000);
+
+      // Remove listen and port from extraServerArgs so core launch args are used instead.
+      delete extraServerArgs.listen;
+      delete extraServerArgs.port;
 
       if (!useExternalServer) {
         await comfyDesktopApp.startComfyServer({ host, port, extraServerArgs });
       }
       appWindow.sendServerStartProgress(ProgressStatus.READY);
-      appWindow.loadComfyUI({ host, port, extraServerArgs });
+      await appWindow.loadComfyUI({ host, port, extraServerArgs });
     } catch (error) {
+      log.error('Unhandled exception during app startup', error);
       appWindow.sendServerStartProgress(ProgressStatus.ERROR);
       appWindow.send(IPC_CHANNELS.LOG_MESSAGE, error);
     }
   } catch (error) {
-    log.error('Fatal error occurred during app startup.', error);
+    log.error('Fatal error occurred during app pre-startup.', error);
     app.exit(2024);
   }
 }

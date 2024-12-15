@@ -1,7 +1,7 @@
 import { app } from 'electron';
 import { IPC_CHANNELS, ServerArgs } from '../constants';
 import { VirtualEnvironment } from '../virtualEnvironment';
-import { rotateLogFiles } from '../utils';
+import { ansiCodes, rotateLogFiles } from '../utils';
 import { getAppResourcesPath } from '../install/resourcePaths';
 import log from 'electron-log/main';
 import path from 'path';
@@ -75,6 +75,7 @@ export class ComfyServer {
       'front-end-root': this.webRootPath,
       'extra-model-paths-config': ComfyServerConfig.configPath,
       port: this.serverArgs.port.toString(),
+      listen: this.serverArgs.host,
     };
   }
 
@@ -90,16 +91,22 @@ export class ComfyServer {
 
   get launchArgs() {
     return ComfyServer.buildLaunchArgs(this.mainScriptPath, {
-      ...this.serverArgs.extraServerArgs,
       ...this.coreLaunchArgs,
+      ...this.serverArgs.extraServerArgs,
     });
   }
 
   async start() {
     await rotateLogFiles(app.getPath('logs'), 'comfyui', 50);
-    return new Promise<void>(async (resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const comfyUILog = log.create({ logId: 'comfyui' });
       comfyUILog.transports.file.fileName = 'comfyui.log';
+
+      // TODO: Check if electron-log has updated types
+      comfyUILog.transports.file.transforms.push(({ data }) => {
+        // @ts-expect-error electron-log types are broken.  data and return type are `string`.
+        return typeof data === 'string' ? data.replaceAll(ansiCodes, '') : data;
+      });
 
       const comfyServerProcess = this.virtualEnvironment.runPythonCommand(this.launchArgs, {
         onStdout: (data) => {
@@ -129,19 +136,19 @@ export class ComfyServer {
 
       this.comfyServerProcess = comfyServerProcess;
 
-      try {
-        await waitOn({
-          resources: [`${this.baseUrl}/queue`],
-          timeout: ComfyServer.MAX_FAIL_WAIT,
-          interval: ComfyServer.CHECK_INTERVAL,
+      waitOn({
+        resources: [`${this.baseUrl}/queue`],
+        timeout: ComfyServer.MAX_FAIL_WAIT,
+        interval: ComfyServer.CHECK_INTERVAL,
+      })
+        .then(() => {
+          log.info('Python server is ready');
+          resolve();
+        })
+        .catch((error) => {
+          log.error('Server failed to start:', error);
+          reject(new Error('Python Server Failed To Start Within Timeout.'));
         });
-
-        log.info('Python server is ready');
-        resolve();
-      } catch (error) {
-        log.error('Server failed to start:', error);
-        reject('Python Server Failed To Start Within Timeout.');
-      }
     });
   }
 

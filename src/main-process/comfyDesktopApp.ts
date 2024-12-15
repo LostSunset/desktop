@@ -9,14 +9,14 @@ import { AppWindow } from './appWindow';
 import { ComfyServer } from './comfyServer';
 import { ComfyServerConfig } from '../config/comfyServerConfig';
 import fs from 'fs';
-import { InstallOptions } from '../preload';
+import { InstallOptions, type ElectronContextMenuOptions, type TorchDeviceType } from '../preload';
 import path from 'path';
-import { getModelsDirectory, validateHardware } from '../utils';
+import { ansiCodes, getModelsDirectory, validateHardware } from '../utils';
 import { DownloadManager } from '../models/DownloadManager';
 import { VirtualEnvironment } from '../virtualEnvironment';
 import { InstallWizard } from '../install/installWizard';
-import { Terminal } from '../terminal';
-import { DesktopConfig } from '../store/desktopConfig';
+import { Terminal } from '../shell/terminal';
+import { useDesktopConfig } from '../store/desktopConfig';
 import { InstallationValidator } from '../install/installationValidator';
 import { restoreCustomNodes } from '../services/backup';
 
@@ -35,7 +35,7 @@ export class ComfyDesktopApp {
   }
 
   public async initialize(): Promise<void> {
-    this.comfySettings.loadSettings();
+    await this.comfySettings.loadSettings();
     this.registerIPCHandlers();
     this.initializeTodesktop();
     await this.setupGPUContext();
@@ -64,7 +64,7 @@ export class ComfyDesktopApp {
       this.terminal?.resize(cols, rows);
     });
 
-    ipcMain.handle(IPC_CHANNELS.TERMINAL_RESTORE, (_event) => {
+    ipcMain.handle(IPC_CHANNELS.TERMINAL_RESTORE, () => {
       return this.terminal?.restore();
     });
   }
@@ -83,7 +83,7 @@ export class ComfyDesktopApp {
       }));
 
       // Combine all GPU info into a single object
-      const allGpuInfo = Object.assign({}, ...gpuInfo);
+      const allGpuInfo = { ...gpuInfo };
       // Set Sentry context with all GPU information
       Sentry.setContext('gpus', allGpuInfo);
     } catch (e) {
@@ -92,6 +92,9 @@ export class ComfyDesktopApp {
   }
 
   registerIPCHandlers(): void {
+    ipcMain.on(IPC_CHANNELS.SHOW_CONTEXT_MENU, (_event, options?: ElectronContextMenuOptions) => {
+      this.appWindow.showSystemContextMenu(options);
+    });
     ipcMain.on(IPC_CHANNELS.OPEN_DEV_TOOLS, () => {
       this.appWindow.openDevTools();
     });
@@ -117,19 +120,38 @@ export class ComfyDesktopApp {
       log.info('Reinstalling...');
       this.reinstall();
     });
-    ipcMain.handle(IPC_CHANNELS.SEND_ERROR_TO_SENTRY, async (_event, { error, extras }): Promise<string | null> => {
-      try {
-        return Sentry.captureMessage(error, {
-          level: 'error',
-          extra: { ...extras, comfyUIExecutionError: true },
-          tags: {
-            comfyorigin: 'core',
-          },
-        });
-      } catch (err) {
-        log.error('Failed to send error to Sentry:', err);
-        return null;
+    type SentryErrorDetail = {
+      error: string;
+      extras?: Record<string, unknown>;
+    };
+
+    ipcMain.handle(
+      IPC_CHANNELS.SEND_ERROR_TO_SENTRY,
+      async (_event, { error, extras }: SentryErrorDetail): Promise<string | null> => {
+        try {
+          return Sentry.captureMessage(error, {
+            level: 'error',
+            extra: { ...extras, comfyUIExecutionError: true },
+            tags: {
+              comfyorigin: 'core',
+            },
+          });
+        } catch (err) {
+          log.error('Failed to send error to Sentry:', err);
+          return null;
+        }
       }
+    );
+    // Config
+    ipcMain.handle(IPC_CHANNELS.GET_GPU, async (): Promise<TorchDeviceType | undefined> => {
+      return await useDesktopConfig().getAsync('detectedGpu');
+    });
+    // Restart core
+    ipcMain.handle(IPC_CHANNELS.RESTART_CORE, async (): Promise<boolean> => {
+      if (!this.comfyServer) return false;
+      await this.comfyServer?.kill();
+      await this.comfyServer.start();
+      return true;
     });
   }
 
@@ -138,6 +160,8 @@ export class ComfyDesktopApp {
    */
   static async install(appWindow: AppWindow): Promise<string> {
     const validation = await validateHardware();
+    if (typeof validation?.gpu === 'string') useDesktopConfig().set('detectedGpu', validation.gpu);
+
     if (!validation.isValid) {
       await appWindow.loadRenderer('not-supported');
       log.error(validation.error);
@@ -145,58 +169,71 @@ export class ComfyDesktopApp {
       await appWindow.loadRenderer('welcome');
     }
 
-    return new Promise<string>((resolve) => {
-      ipcMain.on(IPC_CHANNELS.INSTALL_COMFYUI, async (event, installOptions: InstallOptions) => {
+    return new Promise<string>((resolve, reject) => {
+      ipcMain.on(IPC_CHANNELS.INSTALL_COMFYUI, (_event, installOptions: InstallOptions) => {
         const installWizard = new InstallWizard(installOptions);
-        const { store } = DesktopConfig;
-        store.set('basePath', installWizard.basePath);
+        useDesktopConfig().set('basePath', installWizard.basePath);
 
-        await installWizard.install();
-        store.set('installState', 'installed');
-        resolve(installWizard.basePath);
+        const { device } = installOptions;
+        if (device !== undefined) {
+          useDesktopConfig().set('selectedDevice', device);
+        }
+
+        installWizard
+          .install()
+          .then(() => {
+            useDesktopConfig().set('installState', 'installed');
+            appWindow.maximize();
+            resolve(installWizard.basePath);
+          })
+          .catch((reason) => {
+            reject(reason);
+          });
       });
     });
   }
 
   async startComfyServer(serverArgs: ServerArgs) {
-    app.on('before-quit', async () => {
+    app.on('before-quit', () => {
       if (!this.comfyServer) {
         return;
       }
 
-      try {
-        log.info('Before-quit: Killing Python server');
-        await this.comfyServer.kill();
-      } catch (error) {
+      log.info('Before-quit: Killing Python server');
+      this.comfyServer.kill().catch((error) => {
         log.error('Python server did not exit properly');
         log.error(error);
-      }
+      });
     });
     log.info('Server start');
-    this.appWindow.loadRenderer('server-start');
+    await this.appWindow.loadRenderer('server-start');
 
-    DownloadManager.getInstance(this.appWindow!, getModelsDirectory(this.basePath));
+    DownloadManager.getInstance(this.appWindow, getModelsDirectory(this.basePath));
 
     this.appWindow.sendServerStartProgress(ProgressStatus.PYTHON_SETUP);
-    const virtualEnvironment = new VirtualEnvironment(this.basePath);
+
+    const config = useDesktopConfig();
+    const selectedDevice = config.get('selectedDevice');
+    const virtualEnvironment = new VirtualEnvironment(this.basePath, selectedDevice);
+
     await virtualEnvironment.create({
       onStdout: (data) => {
-        log.info(data);
+        log.info(data.replaceAll(ansiCodes, ''));
         this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
       },
       onStderr: (data) => {
-        log.error(data);
+        log.error(data.replaceAll(ansiCodes, ''));
         this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
       },
     });
-    const { store } = DesktopConfig;
-    if (!store.get('Comfy-Desktop.RestoredCustomNodes', false)) {
+
+    if (!config.get('Comfy-Desktop.RestoredCustomNodes', false)) {
       try {
         await restoreCustomNodes(virtualEnvironment, this.appWindow);
-        store.set('Comfy-Desktop.RestoredCustomNodes', true);
+        config.set('Comfy-Desktop.RestoredCustomNodes', true);
       } catch (error) {
         log.error('Failed to restore custom nodes:', error);
-        store.set('Comfy-Desktop.RestoredCustomNodes', false);
+        config.set('Comfy-Desktop.RestoredCustomNodes', false);
       }
     }
 
@@ -207,9 +244,8 @@ export class ComfyDesktopApp {
   }
 
   static async create(appWindow: AppWindow): Promise<ComfyDesktopApp> {
-    const { store } = DesktopConfig;
     // Migrate settings from old version if required
-    const installState = store.get('installState') ?? (await ComfyDesktopApp.migrateInstallState());
+    const installState = useDesktopConfig().get('installState') ?? (await ComfyDesktopApp.migrateInstallState());
 
     // Fresh install
     const loadedPath = installState === undefined ? undefined : await ComfyDesktopApp.loadBasePath();
@@ -230,10 +266,10 @@ export class ComfyDesktopApp {
     const basePath = await ComfyDesktopApp.loadBasePath();
 
     // Migrate config
-    const { store } = DesktopConfig;
+    const config = useDesktopConfig();
     const upgraded = 'upgraded';
-    store.set('installState', upgraded);
-    store.set('basePath', basePath);
+    config.set('installState', upgraded);
+    config.set('basePath', basePath);
     return upgraded;
   }
 

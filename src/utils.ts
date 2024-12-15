@@ -6,6 +6,9 @@ import si from 'systeminformation';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import log from 'electron-log/main';
+import type { GpuType } from './preload';
+
+export const ansiCodes = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
 
 export async function pathAccessible(path: string): Promise<boolean> {
   try {
@@ -68,7 +71,7 @@ export async function rotateLogFiles(logDir: string, baseName: string, maxFiles 
     const files = await fsPromises.readdir(logDir, { withFileTypes: true });
     const names: string[] = [];
 
-    const logFileRegex = new RegExp(`^${baseName}_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.log$`);
+    const logFileRegex = new RegExp(`^${baseName}_\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z\\.log$`);
 
     for (const file of files) {
       if (file.isFile() && logFileRegex.test(file.name)) names.push(file.name);
@@ -88,6 +91,8 @@ const execAsync = promisify(exec);
 
 interface HardwareValidation {
   isValid: boolean;
+  /** The detected GPU (not guaranteed to be valid - check isValid) */
+  gpu?: GpuType;
   error?: string;
 }
 
@@ -108,13 +113,17 @@ export async function validateHardware(): Promise<HardwareValidation> {
         };
       }
 
-      return { isValid: true };
+      return { isValid: true, gpu: 'mps' };
     }
 
     // Windows NVIDIA GPU validation
     if (process.platform === 'win32') {
       const graphics = await si.graphics();
       const hasNvidia = graphics.controllers.some((controller) => controller.vendor.toLowerCase().includes('nvidia'));
+
+      if (process.env.CI) {
+        return { isValid: true }; // Temporary workaround for testing with Playwright
+      }
 
       if (!hasNvidia) {
         try {
@@ -123,11 +132,9 @@ export async function validateHardware(): Promise<HardwareValidation> {
             'powershell.exe -c "$n = \'*NVIDIA*\'; Get-CimInstance win32_videocontroller | ? { $_.Name -like $n -or $_.VideoProcessor -like $n -or $_.AdapterCompatibility -like $n }"'
           );
           if (!res?.stdout) throw new Error('No video card');
-          return { isValid: true };
         } catch {
           try {
             await execAsync('nvidia-smi');
-            return { isValid: true };
           } catch {
             return {
               isValid: false,
@@ -137,7 +144,7 @@ export async function validateHardware(): Promise<HardwareValidation> {
         }
       }
 
-      return { isValid: true };
+      return { isValid: true, gpu: 'nvidia' };
     }
 
     return {
