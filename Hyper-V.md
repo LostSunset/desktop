@@ -1,6 +1,6 @@
 ## Windows development: Hyper-V
 
-ComfyUI desktop can be built and tested in using a Hyper-V VM.  This document convers configuration of **CPU mode** only.
+ComfyUI desktop can be built and tested in using a Hyper-V VM. This document convers configuration of **CPU mode** only.
 
 ### Requirements
 
@@ -21,7 +21,7 @@ Source: [Microsoft documentation](https://learn.microsoft.com/en-us/virtualizati
 
 ### Configure a VM
 
-A quick-start script to create a VM.  For full details, see [Create a virtual machine with Hyper-V on Windows](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/create-virtual-machine).
+A quick-start script to create a VM. For full details, see [Create a virtual machine with Hyper-V on Windows](https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/quick-start/create-virtual-machine).
 
 Minimum recommended configuration is:
 
@@ -100,7 +100,7 @@ Checkpoint-VM -Name $VMName -SnapshotName "Base VM configured and updated"
 
 - Take checkpoints before making major changes
 - If taken when a VM is shut down, a checkpoint is extremely fast and takes almost no space
-  - Instead of backing up the entire drive, a checkpoint simply stops writing changes to the virtual drive file.  Instead, a new file is created next to it, and differences to the original disk are saved there.
+  - Instead of backing up the entire drive, a checkpoint simply stops writing changes to the virtual drive file. Instead, a new file is created next to it, and differences to the original disk are saved there.
 - Applying a checkpoint completely resets the hard drive to the exact condition it was in before
 
 ### Ready to code
@@ -113,7 +113,7 @@ Checkpoint-VM -Name $VMName -SnapshotName "Base VM configured and updated"
 
 ### Restoring checkpoints
 
-GUI is strongly recommended when applying checkpoints.  If you need the command line:
+GUI is strongly recommended when applying checkpoints. If you need the command line:
 
 ```ps1
 Restore-VMCheckpoint -VMName $VMName -Name "Insert 'SnapshotName' Here"
