@@ -1,6 +1,6 @@
 import { session, DownloadItem, ipcMain } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
+import path from 'node:path';
+import fs from 'node:fs';
 import { IPC_CHANNELS } from '../constants';
 import log from 'electron-log/main';
 import type { AppWindow } from '../main-process/appWindow';
@@ -223,7 +223,7 @@ export class DownloadManager {
   }
 
   getAllDownloads(): DownloadState[] {
-    return Array.from(this.downloads.values())
+    return [...this.downloads.values()]
       .filter((download) => download.item !== null)
       .map((download) => ({
         url: download.url,

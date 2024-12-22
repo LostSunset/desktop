@@ -2,7 +2,7 @@ import log from 'electron-log/main';
 import ElectronStore from 'electron-store';
 import { app, dialog } from 'electron';
 import path from 'node:path';
-import fs from 'fs/promises';
+import fs from 'node:fs/promises';
 import type { DesktopSettings } from '.';
 
 /** Backing ref for the singleton config instance. */
@@ -36,6 +36,7 @@ export class DesktopConfig {
    * Static factory method. Loads the config from disk.
    * @param shell Shell environment that can open file and folder views for the user
    * @param options electron-store options to pass through to the backing store
+   * @returns The newly created instance, or `undefined` on error.
    * @throws On unknown error
    */
   static async load(
@@ -90,26 +91,16 @@ export class DesktopConfig {
    * @returns A promise that resolves on successful save, or rejects with the first caught error.
    */
   async setAsync<Key extends keyof DesktopSettings>(key: Key, value: DesktopSettings[Key]): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       log.info(`Saving setting: [${key}]`, value);
-      try {
-        this.#store.set(key, value);
-        resolve();
-      } catch (error) {
-        reject(error);
-      }
+      this.#store.set(key, value);
+      resolve();
     });
   }
 
   /** @inheritdoc {@link ElectronStore.get} */
   async getAsync<Key extends keyof DesktopSettings>(key: Key): Promise<DesktopSettings[Key]> {
-    return new Promise((resolve, reject) => {
-      try {
-        resolve(this.#store.get(key));
-      } catch (error) {
-        reject(error);
-      }
-    });
+    return new Promise((resolve) => resolve(this.#store.get(key)));
   }
 }
 

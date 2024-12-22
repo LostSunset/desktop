@@ -4,11 +4,11 @@ import { VirtualEnvironment } from '../virtualEnvironment';
 import { ansiCodes, rotateLogFiles } from '../utils';
 import { getAppResourcesPath } from '../install/resourcePaths';
 import log from 'electron-log/main';
-import path from 'path';
+import path from 'node:path';
 import { ComfyServerConfig } from '../config/comfyServerConfig';
 import { AppWindow } from './appWindow';
 import waitOn from 'wait-on';
-import { ChildProcess } from 'child_process';
+import { ChildProcess } from 'node:child_process';
 
 export class ComfyServer {
   /**
@@ -80,13 +80,13 @@ export class ComfyServer {
   }
 
   static buildLaunchArgs(mainScriptPath: string, args: Record<string, string>) {
-    return [mainScriptPath].concat(
-      Object.entries(args)
-        .map(([key, value]) => [`--${key}`, value])
-        .flat()
+    return [
+      mainScriptPath,
+      ...Object.entries(args)
+        .flatMap(([key, value]) => [`--${key}`, value])
         // Empty string values are ignored. e.g. { cpu: '' } => '--cpu'
-        .filter((value: string) => value !== '')
-    );
+        .filter((value: string) => value !== ''),
+    ];
   }
 
   get launchArgs() {
@@ -103,9 +103,9 @@ export class ComfyServer {
       comfyUILog.transports.file.fileName = 'comfyui.log';
 
       // TODO: Check if electron-log has updated types
+      // @ts-expect-error electron-log types are broken.  data and return type are `string`.
       comfyUILog.transports.file.transforms.push(({ data }) => {
-        // @ts-expect-error electron-log types are broken.  data and return type are `string`.
-        return typeof data === 'string' ? data.replaceAll(ansiCodes, '') : data;
+        return typeof data === 'string' ? (data as string).replaceAll(ansiCodes, '') : data;
       });
 
       const comfyServerProcess = this.virtualEnvironment.runPythonCommand(this.launchArgs, {
@@ -164,7 +164,7 @@ export class ComfyServer {
       // Set up a timeout in case the process doesn't exit
       const timeout = setTimeout(() => {
         reject(new Error('Timeout: Python server did not exit within 10 seconds'));
-      }, 10000);
+      }, 10_000);
 
       // Listen for the 'exit' event
       this.comfyServerProcess.once('exit', (code, signal) => {

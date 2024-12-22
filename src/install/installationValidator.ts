@@ -1,5 +1,5 @@
 import { app, dialog, shell } from 'electron';
-import fs from 'fs/promises';
+import fs from 'node:fs/promises';
 import log from 'electron-log/main';
 import path from 'node:path';
 
@@ -13,7 +13,7 @@ export class InstallationValidator {
    * @param options The options paramter of {@link dialog.showMessageBox}, filled with defaults for invalid config
    * @returns
    */
-  static async showInvalidFileAndQuit(file: string, options: MessageBoxOptions): Promise<void> {
+  async showInvalidFileAndQuit(file: string, options: MessageBoxOptions): Promise<void> {
     const defaults: Partial<Electron.MessageBoxOptions> = {
       title: 'Invalid file',
       type: 'error',

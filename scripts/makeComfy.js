@@ -1,6 +1,5 @@
-const { execSync } = require('child_process');
-const pkg = require('../package.json');
-const fs = require('fs');
+import * as child_process from 'node:child_process';
+import pkg from './getPackage.js';
 
 function makeAssets(gpuFlag) {
   const baseCommand = [
@@ -13,11 +12,11 @@ function makeAssets(gpuFlag) {
     '--manager-url',
     'https://github.com/Comfy-Org/ComfyUI-Manager',
     '&&',
-    'yarn run make:frontend'
+    'yarn run make:frontend',
   ].join(' ');
 
   try {
-    execSync(baseCommand, { stdio: 'inherit' });
+    child_process.execSync(baseCommand, { stdio: 'inherit' });
   } catch (error) {
     console.error('Failed to make assets:', error);
     process.exit(1);
@@ -30,7 +29,7 @@ const gpuFlags = {
   nvidia: '--nvidia',
   amd: '--amd',
   cpu: '--cpu',
-  macos: '--m-series'
+  macos: '--m-series',
 };
 
 if (!arg || !gpuFlags[arg]) {
