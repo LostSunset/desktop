@@ -5,24 +5,29 @@ on:
   workflow_call:
 
 jobs:
-  build-linux-debug:
+  update-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Github checkout
-        uses: actions/checkout@v4
-      - name: Declare some variables
+      - name: Update Release Notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ID: "241225xbshgcqlj"  # Hardcoded for testing
         run: |
-          echo "sha_short=$(git rev-parse --short "$GITHUB_SHA")" >> "$GITHUB_ENV"
-        shell: bash
-      - name: Build
-        uses: ./.github/actions/build/linux/app
-        with:
-          build-gpu: 'cpu'
-          sign-and-publish: false
-          COMFYUI_CPU_ONLY: true
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
-      - name: Upload Build
-        uses: actions/upload-artifact@v4
-        with:
-          name: comfyui-electron-linux-debug-build-${{env.sha_short}}
-          path: dist/*.zip
+          # First get existing release notes
+          EXISTING_NOTES=$(gh release view v0.4.3 --json body -q .body)
+          
+          # Create download links section
+          DOWNLOAD_LINKS="### Download Latest
+Mac (Apple Silicon): https://download.comfy.org/mac/dmg/arm64
+Windows: https://download.comfy.org/windows/nsis/x64
+
+<details>
+<summary>Artifacts of current release</summary>
+
+Mac (Apple Silicon): https://download.comfy.org/${BUILD_ID}/mac/dmg/arm64
+Windows: https://download.comfy.org/${BUILD_ID}/windows/nsis/x64
+</details>"
+          
+          # Combine and update
+          UPDATED_NOTES="${EXISTING_NOTES}${DOWNLOAD_LINKS}"
+          gh release edit ${{ inputs.tag }} --notes "$UPDATED_NOTES"
