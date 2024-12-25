@@ -1,40 +1,35 @@
-name: Build All Platforms Debug
-
+name: Test Release Notes Update
 on:
-  pull_request:
-    branches:
-      - 'main'
-    paths-ignore:
-      - '.prettierrc'
-      - '.eslintrc.json'
-      - '.prettierignore'
-      - 'README.md'
-      - 'husky/**'
-      - '.vscode/**'
-      - 'scripts/**'
-      - '.gitignore'
-      - 'todesktop.json'
-  push:
-    branches:
-      - 'main'
-    paths-ignore:
-      - '.prettierrc'
-      - '.eslintrc.json'
-      - '.prettierignore'
-      - 'README.md'
-      - 'husky/**'
-      - '.vscode/**'
-      - 'scripts/**'
-      - '.gitignore'
-      - 'todesktop.json'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to update (e.g., v0.4.3)'
+        required: true
 
 jobs:
-  build-windows-debug-all:
-    secrets: inherit
-    uses: ./.github/workflows/debug_windows.yml
-  build-apple-debug-all:
-    secrets: inherit
-    uses: ./.github/workflows/debug_macos.yml
-  build-linux-debug-all:
-    secrets: inherit
-    uses: ./.github/workflows/debug_linux.yml
+  update-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Release Notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ID: "241225xbshgcqlj"  # Hardcoded for testing
+        run: |
+          # First get existing release notes
+          EXISTING_NOTES=$(gh release view ${{ inputs.tag }} --json body -q .body)
+          
+          # Create download links section
+          DOWNLOAD_LINKS="### Download Latest
+Mac (Apple Silicon): https://download.comfy.org/mac/dmg/arm64
+Windows: https://download.comfy.org/windows/nsis/x64
+
+<details>
+<summary>Artifacts of current release</summary>
+
+Mac (Apple Silicon): https://download.comfy.org/${BUILD_ID}/mac/dmg/arm64
+Windows: https://download.comfy.org/${BUILD_ID}/windows/nsis/x64
+</details>"
+          
+          # Combine and update
+          UPDATED_NOTES="${EXISTING_NOTES}${DOWNLOAD_LINKS}"
+          gh release edit ${{ inputs.tag }} --notes "$UPDATED_NOTES"
