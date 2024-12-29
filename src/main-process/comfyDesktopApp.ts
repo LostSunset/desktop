@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain } from 'electron';
+import { app, dialog, ipcMain, Notification } from 'electron';
 import log from 'electron-log/main';
 import * as Sentry from '@sentry/electron/main';
 import { graphics } from 'systeminformation';
@@ -8,17 +8,16 @@ import { ComfySettings } from '../config/comfySettings';
 import { AppWindow } from './appWindow';
 import { ComfyServer } from './comfyServer';
 import { ComfyServerConfig } from '../config/comfyServerConfig';
-import fs from 'node:fs';
-import { InstallOptions, type ElectronContextMenuOptions } from '../preload';
+import { type ElectronContextMenuOptions } from '../preload';
 import path from 'node:path';
-import { ansiCodes, getModelsDirectory, validateHardware } from '../utils';
+import { ansiCodes, getModelsDirectory } from '../utils';
 import { DownloadManager } from '../models/DownloadManager';
-import { VirtualEnvironment } from '../virtualEnvironment';
-import { InstallWizard } from '../install/installWizard';
+import { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
 import { Terminal } from '../shell/terminal';
-import { useDesktopConfig } from '../store/desktopConfig';
-import { InstallationValidator } from '../install/installationValidator';
+import { DesktopConfig, useDesktopConfig } from '../store/desktopConfig';
 import { restoreCustomNodes } from '../services/backup';
+import { CmCli } from '../services/cmCli';
+import { rm } from 'node:fs/promises';
 
 export class ComfyDesktopApp {
   public comfyServer: ComfyServer | null = null;
@@ -117,10 +116,9 @@ export class ComfyDesktopApp {
     ipcMain.handle(IPC_CHANNELS.IS_FIRST_TIME_SETUP, () => {
       return !ComfyServerConfig.exists();
     });
-    // eslint-disable-next-line @typescript-eslint/require-await
     ipcMain.handle(IPC_CHANNELS.REINSTALL, async () => {
       log.info('Reinstalling...');
-      this.reinstall();
+      await this.reinstall();
     });
     type SentryErrorDetail = {
       error: string;
@@ -154,45 +152,6 @@ export class ComfyDesktopApp {
     });
   }
 
-  /**
-   * Install ComfyUI and return the base path.
-   */
-  static async install(appWindow: AppWindow): Promise<string> {
-    const config = useDesktopConfig();
-    if (!config.get('installState')) config.set('installState', 'started');
-
-    const validation = await validateHardware();
-    if (typeof validation?.gpu === 'string') config.set('detectedGpu', validation.gpu);
-
-    if (!validation.isValid) {
-      await appWindow.loadRenderer('not-supported');
-      log.error(validation.error);
-    } else {
-      await appWindow.loadRenderer('welcome');
-    }
-
-    return new Promise<string>((resolve, reject) => {
-      ipcMain.on(IPC_CHANNELS.INSTALL_COMFYUI, (_event, installOptions: InstallOptions) => {
-        const installWizard = new InstallWizard(installOptions);
-        useDesktopConfig().set('basePath', installWizard.basePath);
-
-        const { device } = installOptions;
-        if (device !== undefined) {
-          useDesktopConfig().set('selectedDevice', device);
-        }
-
-        installWizard
-          .install()
-          .then(() => {
-            useDesktopConfig().set('installState', 'installed');
-            appWindow.maximize();
-            resolve(installWizard.basePath);
-          })
-          .catch(reject);
-      });
-    });
-  }
-
   async startComfyServer(serverArgs: ServerArgs) {
     app.on('before-quit', () => {
       if (!this.comfyServer) {
@@ -216,7 +175,7 @@ export class ComfyDesktopApp {
     const selectedDevice = config.get('selectedDevice');
     const virtualEnvironment = new VirtualEnvironment(this.basePath, selectedDevice);
 
-    await virtualEnvironment.create({
+    const processCallbacks: ProcessCallbacks = {
       onStdout: (data) => {
         log.info(data.replaceAll(ansiCodes, ''));
         this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
@@ -225,7 +184,11 @@ export class ComfyDesktopApp {
         log.error(data.replaceAll(ansiCodes, ''));
         this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
       },
-    });
+    };
+
+    await virtualEnvironment.create(processCallbacks);
+
+    const customNodeMigrationError = await this.migrateCustomNodes(config, virtualEnvironment, processCallbacks);
 
     if (!config.get('Comfy-Desktop.RestoredCustomNodes', false)) {
       try {
@@ -241,78 +204,46 @@ export class ComfyDesktopApp {
     this.comfyServer = new ComfyServer(this.basePath, serverArgs, virtualEnvironment, this.appWindow);
     await this.comfyServer.start();
     this.initializeTerminal(virtualEnvironment);
-  }
 
-  static async create(appWindow: AppWindow): Promise<ComfyDesktopApp> {
-    // Migrate settings from old version if required
-    const installState = useDesktopConfig().get('installState') ?? (await ComfyDesktopApp.migrateInstallState());
-
-    // Fresh install
-    const loadedPath = installState === undefined ? undefined : await ComfyDesktopApp.loadBasePath();
-    const basePath = loadedPath ?? (await ComfyDesktopApp.install(appWindow));
-
-    return new ComfyDesktopApp(basePath, new ComfySettings(basePath), appWindow);
-  }
-
-  /**
-   * Sets the ugpraded state if this is a version upgrade from <= 0.3.18
-   * @returns 'upgraded' if this install has just been upgraded, or undefined for a fresh install
-   */
-  static async migrateInstallState(): Promise<string | undefined> {
-    // Fresh install
-    if (!ComfyServerConfig.exists()) return undefined;
-
-    // Upgrade
-    const basePath = await ComfyDesktopApp.loadBasePath();
-
-    // Migrate config
-    const config = useDesktopConfig();
-    const upgraded = 'upgraded';
-    config.set('installState', upgraded);
-    config.set('basePath', basePath);
-    return upgraded;
-  }
-
-  /**
-   * Loads the base_path value from the YAML config.
-   *
-   * Quits in the event of failure.
-   * @returns The base path of the ComfyUI data directory, if available
-   */
-  static async loadBasePath(): Promise<string | null> {
-    const basePath = await ComfyServerConfig.readBasePathFromConfig(ComfyServerConfig.configPath);
-    switch (basePath.status) {
-      case 'success':
-        return basePath.path;
-      case 'invalid':
-        // TODO: File was there, and was valid YAML.  It just didn't have a valid base_path.
-        // Show path edit screen instead of reinstall.
-        return null;
-      case 'notFound':
-        return null;
-      default:
-        // 'error': Explain and quit
-        // TODO: Support link?  Something?
-        await new InstallationValidator().showInvalidFileAndQuit(ComfyServerConfig.configPath, {
-          message: `Unable to read the YAML configuration file.  Please ensure this file is available and can be read:
-
-${ComfyServerConfig.configPath}
-
-If this problem persists, back up and delete the config file, then restart the app.`,
-          buttons: ['Open ComfyUI &directory and quit', '&Quit'],
-          defaultId: 0,
-          cancelId: 1,
-        });
-        throw new Error('Unreachable');
+    if (customNodeMigrationError) {
+      // TODO: Replace with IPC callback to handle i18n (SoC).
+      new Notification({
+        title: 'Failed to migrate custom nodes',
+        body: customNodeMigrationError,
+      }).show();
     }
   }
 
-  uninstall(): void {
-    fs.rmSync(ComfyServerConfig.configPath);
+  /** @returns `undefined` if successful, or an error `string` on failure. */
+  async migrateCustomNodes(config: DesktopConfig, virtualEnvironment: VirtualEnvironment, callbacks: ProcessCallbacks) {
+    const fromPath = config.get('migrateCustomNodesFrom');
+    if (!fromPath) return;
+
+    log.info('Migrating custom nodes from:', fromPath);
+    try {
+      const cmCli = new CmCli(virtualEnvironment);
+      await cmCli.restoreCustomNodes(fromPath, callbacks);
+    } catch (error) {
+      log.error('Error migrating custom nodes:', error);
+      // TODO: Replace with IPC callback to handle i18n (SoC).
+      return error?.toString?.() ?? 'Error migrating custom nodes.';
+    } finally {
+      // Always remove the flag so the user doesnt get stuck here
+      config.delete('migrateCustomNodesFrom');
+    }
   }
 
-  reinstall(): void {
-    this.uninstall();
+  static create(appWindow: AppWindow, basePath: string): ComfyDesktopApp {
+    return new ComfyDesktopApp(basePath, new ComfySettings(basePath), appWindow);
+  }
+
+  async uninstall(): Promise<void> {
+    await rm(ComfyServerConfig.configPath);
+    await useDesktopConfig().permanentlyDeleteConfigFile();
+  }
+
+  async reinstall(): Promise<void> {
+    await this.uninstall();
     this.restart();
   }
 

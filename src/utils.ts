@@ -19,6 +19,16 @@ export async function pathAccessible(path: string): Promise<boolean> {
   }
 }
 
+export async function containsDirectory(path: string, contains: string): Promise<boolean> {
+  if (await pathAccessible(path)) {
+    const contents = await fsPromises.readdir(path, { withFileTypes: true });
+    for (const item of contents) {
+      if (item.name === contains && item.isDirectory()) return true;
+    }
+  }
+  return false;
+}
+
 export function getModelsDirectory(comfyUIBasePath: string): string {
   return path.join(comfyUIBasePath, 'models');
 }
@@ -100,6 +110,7 @@ interface HardwareValidation {
  * Validate the system hardware requirements for ComfyUI.
  */
 export async function validateHardware(): Promise<HardwareValidation> {
+  log.verbose('Validating hardware.');
   try {
     // Only ARM Macs are supported.
     if (process.platform === 'darwin') {

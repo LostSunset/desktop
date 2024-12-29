@@ -6,9 +6,10 @@ import mainPackage from './getPackage.js';
 const typesPackage = {
   name: `${mainPackage.name}-types`,
   version: mainPackage.version,
-  main: './index.mjs',
+  type: 'module',
+  main: './index.js',
   types: './index.d.ts',
-  files: ['index.d.ts', 'index.mjs'],
+  files: ['index.d.ts', 'index.js'],
   publishConfig: {
     access: 'public',
   },

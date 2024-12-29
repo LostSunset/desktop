@@ -1,13 +1,5 @@
 import type { GpuType, TorchDeviceType } from '../preload';
 
-export type AppWindowSettings = {
-  windowWidth: number;
-  windowHeight: number;
-  windowX: number | undefined;
-  windowY: number | undefined;
-  windowMaximized?: boolean;
-};
-
 export type DesktopSettings = {
   basePath?: string | null;
   /**
@@ -18,6 +10,10 @@ export type DesktopSettings = {
    * in the yaml config.
    */
   installState?: 'started' | 'installed' | 'upgraded';
+  /**
+   * The path to the migration installation to migrate custom nodes from
+   */
+  migrateCustomNodesFrom?: string;
   /**
    * The last GPU that was detected during hardware validation.
    * Allows manual override of some install behaviour.

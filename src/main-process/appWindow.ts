@@ -1,7 +1,7 @@
 import { BrowserWindow, screen, app, shell, ipcMain, Tray, Menu, dialog, MenuItem } from 'electron';
 import path from 'node:path';
 import Store from 'electron-store';
-import { AppWindowSettings } from '../store';
+import { AppWindowSettings } from '../store/AppWindowSettings';
 import log from 'electron-log/main';
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
 import { getAppResourcesPath } from '../install/resourcePaths';
@@ -149,6 +149,16 @@ export class AppWindow {
       const frontendPath = path.join(appResourcesPath, 'ComfyUI', 'web_custom_versions', 'desktop_app');
       await this.window.loadFile(path.join(frontendPath, 'index.html'), { hash: urlPath });
     }
+  }
+
+  /** Opens a modal file/folder picker. @inheritdoc {@link Electron.Dialog.showOpenDialog} */
+  public async showOpenDialog(options: Electron.OpenDialogOptions) {
+    return await dialog.showOpenDialog(this.window, options);
+  }
+
+  /** Opens a modal message box. @inheritdoc {@link Electron.Dialog.showMessageBox} */
+  public async showMessageBox(options: Electron.MessageBoxOptions) {
+    return await dialog.showMessageBox(this.window, options);
   }
 
   /**

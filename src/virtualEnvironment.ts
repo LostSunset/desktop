@@ -8,7 +8,7 @@ import os, { EOL } from 'node:os';
 import { getDefaultShell } from './shell/util';
 import type { TorchDeviceType } from './preload';
 
-type ProcessCallbacks = {
+export type ProcessCallbacks = {
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
 };
@@ -50,7 +50,7 @@ export class VirtualEnvironment {
     return this.uvPty;
   }
 
-  constructor(venvPath: string, selectedDevice: TorchDeviceType | undefined, pythonVersion: string = '3.12.4') {
+  constructor(venvPath: string, selectedDevice: TorchDeviceType | undefined, pythonVersion: string = '3.12.8') {
     this.venvRootPath = venvPath;
     this.pythonVersion = pythonVersion;
     this.selectedDevice = selectedDevice;
@@ -108,17 +108,8 @@ export class VirtualEnvironment {
     try {
       await this.createEnvironment(callbacks);
     } finally {
-      if (this.uvPty) {
-        // If we have a pty instance then we need to kill it on a delay
-        // else you may get an EPIPE error on reading the stream if it is
-        // reading/writing as you kill it
-        const pty = this.uvPty;
-        this.uvPty = undefined;
-        pty.pause();
-        setTimeout(() => {
-          this.uvPty?.kill();
-        }, 100);
-      }
+      const pid = this.uvPty?.pid;
+      if (pid) process.kill(pid);
     }
   }
 
@@ -215,15 +206,19 @@ export class VirtualEnvironment {
    */
   public async runPythonCommandAsync(
     args: string[],
-    callbacks?: ProcessCallbacks
+    callbacks?: ProcessCallbacks,
+    env?: Record<string, string>,
+    cwd?: string
   ): Promise<{ exitCode: number | null }> {
     return this.runCommandAsync(
       this.pythonInterpreterPath,
       args,
       {
+        ...env,
         PYTHONIOENCODING: 'utf8',
       },
-      callbacks
+      callbacks,
+      cwd
     );
   }
 
@@ -281,11 +276,12 @@ export class VirtualEnvironment {
     command: string,
     args: string[],
     env: Record<string, string>,
-    callbacks?: ProcessCallbacks
+    callbacks?: ProcessCallbacks,
+    cwd?: string
   ): ChildProcess {
     log.info(`Running command: ${command} ${args.join(' ')} in ${this.venvRootPath}`);
     const childProcess: ChildProcess = spawn(command, args, {
-      cwd: this.venvRootPath,
+      cwd: cwd ?? this.venvRootPath,
       env: {
         ...process.env,
         ...env,
@@ -311,10 +307,11 @@ export class VirtualEnvironment {
     command: string,
     args: string[],
     env: Record<string, string>,
-    callbacks?: ProcessCallbacks
+    callbacks?: ProcessCallbacks,
+    cwd?: string
   ): Promise<{ exitCode: number | null }> {
     return new Promise((resolve, reject) => {
-      const childProcess = this.runCommand(command, args, env, callbacks);
+      const childProcess = this.runCommand(command, args, env, callbacks, cwd);
 
       childProcess.on('close', (code) => {
         resolve({ exitCode: code });

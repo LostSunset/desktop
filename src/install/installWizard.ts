@@ -17,21 +17,13 @@ export class InstallWizard {
     return this.installOptions.migrationSourcePath;
   }
 
-  get shouldMigrateUserFiles(): boolean {
-    return !!this.migrationSource && this.migrationItemIds.has('user_files');
-  }
-
-  get shouldMigrateModels(): boolean {
-    return !!this.migrationSource && this.migrationItemIds.has('models');
-  }
-
   get basePath(): string {
-    return path.join(this.installOptions.installPath, 'ComfyUI');
+    return this.installOptions.installPath;
   }
 
   public async install() {
     // Setup the ComfyUI folder structure.
-    ComfyConfigManager.setUpComfyUI(this.basePath);
+    ComfyConfigManager.createComfyDirectories(this.basePath);
     this.initializeUserFiles();
     this.initializeSettings();
     await this.initializeModelPaths();
@@ -41,11 +33,11 @@ export class InstallWizard {
    * Copy user files from migration source to the new ComfyUI folder.
    */
   public initializeUserFiles() {
-    if (!this.shouldMigrateUserFiles) {
-      return;
-    }
+    const shouldMigrateUserFiles = !!this.migrationSource && this.migrationItemIds.has('user_files');
+    if (!shouldMigrateUserFiles) return;
+
     // Copy user files from migration source to the new ComfyUI folder.
-    const srcUserFilesDir = path.join(this.migrationSource!, 'user');
+    const srcUserFilesDir = path.join(this.migrationSource, 'user');
     const destUserFilesDir = path.join(this.basePath, 'user');
     fs.cpSync(srcUserFilesDir, destUserFilesDir, { recursive: true });
   }
@@ -78,16 +70,18 @@ export class InstallWizard {
   }
 
   /**
-   * Setup extra_model_paths.yaml file
+   * Setup extra_models_config.yaml file
    */
   public async initializeModelPaths() {
-    let yamlContent: Record<string, ModelPaths> = {};
+    let yamlContent: Record<string, ModelPaths>;
 
     const comfyDesktopConfig = ComfyServerConfig.getBaseConfig();
     comfyDesktopConfig['base_path'] = this.basePath;
 
-    if (this.shouldMigrateModels) {
-      const migrationSource = this.migrationSource!;
+    const { migrationSource } = this;
+    const shouldMigrateModels = !!migrationSource && this.migrationItemIds.has('models');
+
+    if (shouldMigrateModels) {
       // The yaml file exists in migration source repo.
       const migrationServerConfigs = await ComfyServerConfig.getConfigFromRepoPath(migrationSource);
 
