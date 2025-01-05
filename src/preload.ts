@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS, ELECTRON_BRIDGE_API, ProgressStatus, DownloadStatus } from './constants';
 import type { DownloadState } from './models/DownloadManager';
 import path from 'node:path';
+import type { DesktopSettings } from './store/desktopSettings';
 
 /**
  * Open a folder in the system's default file explorer.
@@ -39,6 +40,22 @@ export interface DownloadProgressUpdate {
   progress: number;
   status: DownloadStatus;
   message?: string;
+}
+
+/** @todo Type inference chain broken by comfyui-electron-types. This is duplication. */
+export interface ElectronOverlayOptions {
+  /**
+   * The CSS color of the Window Controls Overlay when enabled.
+   */
+  color?: string;
+  /**
+   * The CSS color of the symbols on the Window Controls Overlay when enabled.
+   */
+  symbolColor?: string;
+  /**
+   * The height of the title bar and Window Controls Overlay in pixels.
+   */
+  height?: number;
 }
 
 export interface ElectronContextMenuOptions {
@@ -86,14 +103,15 @@ const electronAPI = {
     console.log('Sending ready event to main process');
     ipcRenderer.send(IPC_CHANNELS.RENDERER_READY);
   },
-  isPackaged: () => {
+  /** Emulates app.ispackaged in renderer */
+  isPackaged: (): Promise<boolean> => {
     return ipcRenderer.invoke(IPC_CHANNELS.IS_PACKAGED);
-  }, //Emulates app.ispackaged in renderer
+  },
   restartApp: (customMessage?: string, delay?: number): void => {
     console.log('Sending restarting app message to main process with custom message:', customMessage);
     ipcRenderer.send(IPC_CHANNELS.RESTART_APP, { customMessage, delay });
   },
-  reinstall: () => {
+  reinstall: (): Promise<void> => {
     return ipcRenderer.invoke(IPC_CHANNELS.REINSTALL);
   },
   openDialog: (options: Electron.OpenDialogOptions) => {
@@ -161,9 +179,8 @@ const electronAPI = {
   getElectronVersion: () => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_ELECTRON_VERSION);
   },
-  getComfyUIVersion: () => {
-    return __COMFYUI_VERSION__;
-  },
+  /** The ComfyUI core version (as defined in package.json) */
+  getComfyUIVersion: () => __COMFYUI_VERSION__,
   /**
    * Send an error message to Sentry
    * @param error The error object or message to send
@@ -244,6 +261,12 @@ const electronAPI = {
     ipcRenderer.send(IPC_CHANNELS.INSTALL_COMFYUI, installOptions);
   },
   /**
+   * Update the Window Controls Overlay theme overrides
+   * @param theme The theme settings to apply
+   * @see {@link https://developer.mozilla.org/en-US/docs/Web/API/Window_Controls_Overlay_API}
+   */
+  changeTheme: (theme: ElectronOverlayOptions): void => ipcRenderer.send(IPC_CHANNELS.CHANGE_THEME, theme),
+  /**
    * Opens native context menus.
    *
    * {@link ElectronContextMenuOptions} contains the various options to control the menu type.
@@ -261,15 +284,18 @@ const electronAPI = {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-return
       return await ipcRenderer.invoke(IPC_CHANNELS.GET_GPU);
     },
+    /** Sets the window style */
+    setWindowStyle: (style: DesktopSettings['windowStyle']): Promise<void> => {
+      return ipcRenderer.invoke(IPC_CHANNELS.SET_WINDOW_STYLE, style);
+    },
   },
   /** Restart the python server without restarting desktop. */
   restartCore: async (): Promise<void> => {
     console.log('Restarting core process');
     await ipcRenderer.invoke(IPC_CHANNELS.RESTART_APP);
   },
-  getPlatform: (): NodeJS.Platform => {
-    return process.platform;
-  },
+  /** Gets the platform reported by node.js */
+  getPlatform: () => process.platform,
 } as const;
 
 export type ElectronAPI = typeof electronAPI;

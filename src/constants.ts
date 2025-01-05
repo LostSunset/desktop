@@ -30,9 +30,11 @@ export const IPC_CHANNELS = {
   VALIDATE_COMFYUI_SOURCE: 'validate-comfyui-source',
   SHOW_DIRECTORY_PICKER: 'show-directory-picker',
   INSTALL_COMFYUI: 'install-comfyui',
+  CHANGE_THEME: 'change-theme',
   SHOW_CONTEXT_MENU: 'show-context-menu',
   RESTART_CORE: 'restart-core',
   GET_GPU: 'get-gpu',
+  SET_WINDOW_STYLE: 'set-window-style',
 } as const;
 
 export enum ProgressStatus {
