@@ -1,16 +1,21 @@
 import { app, ipcMain } from 'electron';
 import log from 'electron-log/main';
-import { ComfyInstallation } from '../main-process/comfyInstallation';
-import type { AppWindow } from '../main-process/appWindow';
-import { useDesktopConfig } from '../store/desktopConfig';
-import type { InstallOptions } from '../preload';
+
 import { IPC_CHANNELS } from '../constants';
-import { InstallWizard } from './installWizard';
+import type { AppWindow } from '../main-process/appWindow';
+import { ComfyInstallation } from '../main-process/comfyInstallation';
+import type { InstallOptions } from '../preload';
+import { ITelemetry } from '../services/telemetry';
+import { useDesktopConfig } from '../store/desktopConfig';
 import { validateHardware } from '../utils';
+import { InstallWizard } from './installWizard';
 
 /** High-level / UI control over the installation of ComfyUI server. */
 export class InstallationManager {
-  constructor(public readonly appWindow: AppWindow) {}
+  constructor(
+    public readonly appWindow: AppWindow,
+    private readonly telemetry: ITelemetry
+  ) {}
 
   /**
    * Ensures that ComfyUI is installed and ready to run.
@@ -20,12 +25,14 @@ export class InstallationManager {
    */
   async ensureInstalled(): Promise<ComfyInstallation> {
     const installation = ComfyInstallation.fromConfig();
+    log.verbose(`Install state: ${installation?.state ?? 'not installed'}`);
 
     // Fresh install
     if (!installation) return await this.freshInstall();
 
     // Validate installation
     const state = await installation.validate();
+    log.verbose(`Validated install state: ${state}`);
     if (state !== 'installed') await this.resumeInstallation(installation);
 
     // Resolve issues and re-run validation
@@ -47,6 +54,7 @@ export class InstallationManager {
    * @param installation The installation to resume
    */
   async resumeInstallation(installation: ComfyInstallation) {
+    log.verbose('Resuming installation.');
     // TODO: Resume install at point of interruption
     if (installation.state === 'started') {
       await this.freshInstall();
@@ -60,7 +68,6 @@ export class InstallationManager {
    */
   async freshInstall(): Promise<ComfyInstallation> {
     log.info('Starting installation.');
-
     const config = useDesktopConfig();
     config.set('installState', 'started');
 
@@ -77,6 +84,7 @@ export class InstallationManager {
     if (!hardware.isValid) {
       log.error(hardware.error);
       log.verbose('Loading not-supported renderer.');
+      this.telemetry.track('desktop:hardware_not_supported');
       await this.appWindow.loadRenderer('not-supported');
     } else {
       log.verbose('Loading welcome renderer.');
@@ -84,9 +92,16 @@ export class InstallationManager {
     }
 
     const installOptions = await optionsPromise;
+    this.telemetry.track('desktop:install_options_received', {
+      gpuType: installOptions.device,
+      autoUpdate: installOptions.autoUpdate,
+      allowMetrics: installOptions.allowMetrics,
+      migrationItemIds: installOptions.migrationItemIds,
+    });
 
-    const installWizard = new InstallWizard(installOptions);
+    const installWizard = new InstallWizard(installOptions, this.telemetry);
     useDesktopConfig().set('basePath', installWizard.basePath);
+    useDesktopConfig().set('versionConsentedMetrics', __COMFYUI_DESKTOP_VERSION__);
 
     const { device } = installOptions;
     if (device !== undefined) {
@@ -101,7 +116,7 @@ export class InstallationManager {
       useDesktopConfig().set('migrateCustomNodesFrom', installWizard.migrationSource);
     }
 
-    const installation = new ComfyInstallation('installed', installWizard.basePath);
+    const installation = new ComfyInstallation('installed', installWizard.basePath, device);
     installation.setState('installed');
     return installation;
   }

@@ -1,10 +1,11 @@
 /// <reference types="vitest/config" />
+import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { UserConfig } from 'vite';
 import { defineConfig, mergeConfig } from 'vite';
-import { getBuildConfig, external } from './vite.base.config';
+
 import { viteElectronAppPlugin } from './infrastructure/viteElectronAppPlugin';
-import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { version } from './package.json';
+import { external, getBuildConfig } from './vite.base.config';
 
 // https://vitejs.dev/config
 export default defineConfig((env) => {
@@ -43,7 +44,6 @@ export default defineConfig((env) => {
     ],
     define: {
       VITE_NAME: JSON.stringify('COMFY'),
-      'process.env.COMFYUI_CPU_ONLY': `"${process.env.COMFYUI_CPU_ONLY}"`,
       'process.env.PUBLISH': `"${process.env.PUBLISH}"`,
     },
     resolve: {

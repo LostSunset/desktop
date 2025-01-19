@@ -1,33 +1,41 @@
-import { app, dialog, ipcMain, Notification, type TitleBarOverlayOptions } from 'electron';
-import log from 'electron-log/main';
 import * as Sentry from '@sentry/electron/main';
-import { graphics } from 'systeminformation';
 import todesktop from '@todesktop/runtime';
-import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
-import { ComfySettings } from '../config/comfySettings';
-import { AppWindow } from './appWindow';
-import { ComfyServer } from './comfyServer';
-import { ComfyServerConfig } from '../config/comfyServerConfig';
-import { type ElectronContextMenuOptions } from '../preload';
+import { Notification, type TitleBarOverlayOptions, app, dialog, ipcMain } from 'electron';
+import log from 'electron-log/main';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import { ansiCodes, getModelsDirectory } from '../utils';
+import { graphics } from 'systeminformation';
+
+import { ComfyServerConfig } from '../config/comfyServerConfig';
+import { ComfySettings } from '../config/comfySettings';
+import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
 import { DownloadManager } from '../models/DownloadManager';
-import { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
+import { type ElectronContextMenuOptions } from '../preload';
+import { CmCli } from '../services/cmCli';
+import { HasTelemetry, ITelemetry } from '../services/telemetry';
 import { Terminal } from '../shell/terminal';
 import { DesktopConfig, useDesktopConfig } from '../store/desktopConfig';
-import { restoreCustomNodes } from '../services/backup';
-import { CmCli } from '../services/cmCli';
-import { rm } from 'node:fs/promises';
+import { ansiCodes, getModelsDirectory } from '../utils';
+import { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
+import { AppWindow } from './appWindow';
+import type { ComfyInstallation } from './comfyInstallation';
+import { ComfyServer } from './comfyServer';
 
-export class ComfyDesktopApp {
+export class ComfyDesktopApp implements HasTelemetry {
   public comfyServer: ComfyServer | null = null;
+  public comfySettings: ComfySettings;
   private terminal: Terminal | null = null; // Only created after server starts.
-
   constructor(
-    public basePath: string,
-    public comfySettings: ComfySettings,
-    public appWindow: AppWindow
-  ) {}
+    public installation: ComfyInstallation,
+    public appWindow: AppWindow,
+    readonly telemetry: ITelemetry
+  ) {
+    this.comfySettings = new ComfySettings(installation.basePath);
+  }
+
+  get basePath() {
+    return this.installation.basePath;
+  }
 
   get pythonInstallPath() {
     return app.isPackaged ? this.basePath : path.join(app.getAppPath(), 'assets');
@@ -111,11 +119,6 @@ export class ComfyDesktopApp {
         }
       }
     );
-
-    // eslint-disable-next-line @typescript-eslint/require-await
-    ipcMain.handle(IPC_CHANNELS.GET_BASE_PATH, async (): Promise<string> => {
-      return this.basePath;
-    });
     ipcMain.handle(IPC_CHANNELS.IS_FIRST_TIME_SETUP, () => {
       return !ComfyServerConfig.exists();
     });
@@ -123,29 +126,6 @@ export class ComfyDesktopApp {
       log.info('Reinstalling...');
       await this.reinstall();
     });
-    type SentryErrorDetail = {
-      error: string;
-      extras?: Record<string, unknown>;
-    };
-
-    ipcMain.handle(
-      IPC_CHANNELS.SEND_ERROR_TO_SENTRY,
-      // eslint-disable-next-line @typescript-eslint/require-await
-      async (_event, { error, extras }: SentryErrorDetail): Promise<string | null> => {
-        try {
-          return Sentry.captureMessage(error, {
-            level: 'error',
-            extra: { ...extras, comfyUIExecutionError: true },
-            tags: {
-              comfyorigin: 'core',
-            },
-          });
-        } catch (error_) {
-          log.error('Failed to send error to Sentry:', error_);
-          return null;
-        }
-      }
-    );
     // Restart core
     ipcMain.handle(IPC_CHANNELS.RESTART_CORE, async (): Promise<boolean> => {
       if (!this.comfyServer) return false;
@@ -174,10 +154,6 @@ export class ComfyDesktopApp {
 
     this.appWindow.sendServerStartProgress(ProgressStatus.PYTHON_SETUP);
 
-    const config = useDesktopConfig();
-    const selectedDevice = config.get('selectedDevice');
-    const virtualEnvironment = new VirtualEnvironment(this.basePath, selectedDevice);
-
     const processCallbacks: ProcessCallbacks = {
       onStdout: (data) => {
         log.info(data.replaceAll(ansiCodes, ''));
@@ -188,23 +164,14 @@ export class ComfyDesktopApp {
         this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
       },
     };
-
+    const { virtualEnvironment } = this.installation;
     await virtualEnvironment.create(processCallbacks);
 
+    const config = useDesktopConfig();
     const customNodeMigrationError = await this.migrateCustomNodes(config, virtualEnvironment, processCallbacks);
 
-    if (!config.get('Comfy-Desktop.RestoredCustomNodes', false)) {
-      try {
-        await restoreCustomNodes(virtualEnvironment, this.appWindow);
-        config.set('Comfy-Desktop.RestoredCustomNodes', true);
-      } catch (error) {
-        log.error('Failed to restore custom nodes:', error);
-        config.set('Comfy-Desktop.RestoredCustomNodes', false);
-      }
-    }
-
     this.appWindow.sendServerStartProgress(ProgressStatus.STARTING_SERVER);
-    this.comfyServer = new ComfyServer(this.basePath, serverArgs, virtualEnvironment, this.appWindow);
+    this.comfyServer = new ComfyServer(this.basePath, serverArgs, virtualEnvironment, this.appWindow, this.telemetry);
     await this.comfyServer.start();
     this.initializeTerminal(virtualEnvironment);
 
@@ -224,7 +191,7 @@ export class ComfyDesktopApp {
 
     log.info('Migrating custom nodes from:', fromPath);
     try {
-      const cmCli = new CmCli(virtualEnvironment);
+      const cmCli = new CmCli(virtualEnvironment, virtualEnvironment.telemetry);
       await cmCli.restoreCustomNodes(fromPath, callbacks);
     } catch (error) {
       log.error('Error migrating custom nodes:', error);
@@ -234,10 +201,6 @@ export class ComfyDesktopApp {
       // Always remove the flag so the user doesnt get stuck here
       config.delete('migrateCustomNodesFrom');
     }
-  }
-
-  static create(appWindow: AppWindow, basePath: string): ComfyDesktopApp {
-    return new ComfyDesktopApp(basePath, new ComfySettings(basePath), appWindow);
   }
 
   async uninstall(): Promise<void> {

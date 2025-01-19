@@ -1,4 +1,4 @@
-import { test, expect, type Locator } from '@playwright/test';
+import { type Locator, expect, test } from '@playwright/test';
 import { chromium } from '@playwright/test';
 
 test('has title', async () => {
@@ -49,7 +49,7 @@ test('has title', async () => {
   await expect(page.getByText('Desktop App Settings')).toBeVisible();
   await page.screenshot({ path: 'screenshot-install.png' });
 
-  /**  */
+  /** Ensure a button is enabled, then click it. */
   async function clickEnabledButton(button: Locator) {
     await expect(button).toBeVisible();
     await expect(button).toBeEnabled();

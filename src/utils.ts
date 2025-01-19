@@ -1,11 +1,12 @@
-import net from 'node:net';
-import fsPromises from 'node:fs/promises';
-import path from 'node:path';
-import fs from 'node:fs';
-import si from 'systeminformation';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
 import log from 'electron-log/main';
+import { exec } from 'node:child_process';
+import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import net from 'node:net';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import si from 'systeminformation';
+
 import type { GpuType } from './preload';
 
 export const ansiCodes = /[\u001B\u009B][#();?[]*(?:\d{1,4}(?:;\d{0,4})*)?[\d<=>A-ORZcf-nqry]/g;
@@ -169,4 +170,27 @@ export async function validateHardware(): Promise<HardwareValidation> {
       error: 'Failed to validate system hardware requirements. Please check the logs for more details.',
     };
   }
+}
+
+const normalize = (version: string) =>
+  version
+    .split(/[+.-]/)
+    .map(Number)
+    .filter((part) => !Number.isNaN(part));
+
+export function compareVersions(versionA: string, versionB: string): number {
+  versionA ??= '0.0.0';
+  versionB ??= '0.0.0';
+
+  const aParts = normalize(versionA);
+  const bParts = normalize(versionB);
+
+  for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
+    const aPart = aParts[i] ?? 0;
+    const bPart = bParts[i] ?? 0;
+    if (aPart < bPart) return -1;
+    if (aPart > bPart) return 1;
+  }
+
+  return 0;
 }

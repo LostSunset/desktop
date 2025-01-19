@@ -1,16 +1,18 @@
 import { app } from 'electron';
-import { IPC_CHANNELS, ServerArgs } from '../constants';
-import { VirtualEnvironment } from '../virtualEnvironment';
-import { ansiCodes, rotateLogFiles } from '../utils';
-import { getAppResourcesPath } from '../install/resourcePaths';
 import log from 'electron-log/main';
-import path from 'node:path';
-import { ComfyServerConfig } from '../config/comfyServerConfig';
-import { AppWindow } from './appWindow';
-import waitOn from 'wait-on';
 import { ChildProcess } from 'node:child_process';
+import path from 'node:path';
+import waitOn from 'wait-on';
 
-export class ComfyServer {
+import { ComfyServerConfig } from '../config/comfyServerConfig';
+import { IPC_CHANNELS, ServerArgs } from '../constants';
+import { getAppResourcesPath } from '../install/resourcePaths';
+import { HasTelemetry, ITelemetry, trackEvent } from '../services/telemetry';
+import { ansiCodes, rotateLogFiles } from '../utils';
+import { VirtualEnvironment } from '../virtualEnvironment';
+import { AppWindow } from './appWindow';
+
+export class ComfyServer implements HasTelemetry {
   /**
    * The maximum amount of time to wait for the server to start.
    * Installing custom nodes dependencies like ffmpeg can take a long time,
@@ -29,7 +31,8 @@ export class ComfyServer {
     public basePath: string,
     public serverArgs: ServerArgs,
     public virtualEnvironment: VirtualEnvironment,
-    public appWindow: AppWindow
+    public appWindow: AppWindow,
+    readonly telemetry: ITelemetry
   ) {}
 
   get baseUrl() {
@@ -96,6 +99,7 @@ export class ComfyServer {
     });
   }
 
+  @trackEvent('comfyui:server_start')
   async start() {
     await rotateLogFiles(app.getPath('logs'), 'comfyui', 50);
     return new Promise<void>((resolve, reject) => {

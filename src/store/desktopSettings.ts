@@ -1,7 +1,7 @@
 import type { GpuType, TorchDeviceType } from '../preload';
 
 export type DesktopSettings = {
-  basePath?: string | null;
+  basePath?: string;
   /**
    * The state of the installation.
    * - `started`: The installation has started.
@@ -21,11 +21,12 @@ export type DesktopSettings = {
   detectedGpu?: GpuType;
   /** The pytorch device that the user selected during installation. */
   selectedDevice?: TorchDeviceType;
-  'Comfy-Desktop.RestoredCustomNodes': boolean;
   /**
    * Controls whether to use a custom window on linux/win32
    * - `custom`: Modern, theme-reactive, feels like an integral part of the UI
    * - `default`: Impersonal, static, plain - default window title bar
    */
   windowStyle?: 'custom' | 'default';
+  /** The version of comfyui-electron on which the user last consented to metrics. */
+  versionConsentedMetrics?: string;
 };

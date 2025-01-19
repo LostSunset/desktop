@@ -1,7 +1,8 @@
 import { ipcMain } from 'electron';
-import { AppInfoHandlers } from '../../../src/handlers/appInfoHandlers';
-import { IPC_CHANNELS } from '../../../src/constants';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { IPC_CHANNELS } from '../../../src/constants';
+import { AppInfoHandlers } from '../../../src/handlers/appInfoHandlers';
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -14,7 +15,7 @@ describe('AppInfoHandlers', () => {
   let handler: AppInfoHandlers;
   beforeEach(() => {
     handler = new AppInfoHandlers();
-    handler.registerHandlers();
+    handler.registerHandlers(null!);
   });
 
   it('should register all expected handle channels', () => {

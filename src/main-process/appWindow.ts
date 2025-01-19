@@ -1,24 +1,25 @@
 import {
   BrowserWindow,
-  screen,
-  app,
-  shell,
-  ipcMain,
-  Tray,
   Menu,
-  dialog,
   MenuItem,
-  nativeTheme,
   type TitleBarOverlayOptions,
+  Tray,
+  app,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  screen,
+  shell,
 } from 'electron';
-import path from 'node:path';
-import Store from 'electron-store';
-import { AppWindowSettings } from '../store/AppWindowSettings';
 import log from 'electron-log/main';
+import Store from 'electron-store';
+import path from 'node:path';
+
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
 import { getAppResourcesPath } from '../install/resourcePaths';
-import { useDesktopConfig } from '../store/desktopConfig';
 import type { ElectronContextMenuOptions } from '../preload';
+import { AppWindowSettings } from '../store/AppWindowSettings';
+import { useDesktopConfig } from '../store/desktopConfig';
 
 /**
  * Creates a single application window that displays the renderer and encapsulates all the logic for sending messages to the renderer.
@@ -38,6 +39,14 @@ export class AppWindow {
   private menu: Electron.Menu | null;
   /** The "edit" menu - cut/copy/paste etc. */
   private editMenu?: Menu;
+  /** Whether this window was created with title bar overlay enabled. When `false`, Electron throws when calling {@link BrowserWindow.setTitleBarOverlay}. */
+  public readonly customWindowEnabled: boolean =
+    process.platform !== 'darwin' && useDesktopConfig().get('windowStyle') === 'custom';
+
+  /** Always returns `undefined` in production. When running unpackaged, returns `DEV_SERVER_URL` if set, otherwise `undefined`. */
+  private get devUrlOverride() {
+    if (!app.isPackaged) return process.env.DEV_SERVER_URL;
+  }
 
   public constructor() {
     const installed = useDesktopConfig().get('installState') === 'installed';
@@ -53,13 +62,12 @@ export class AppWindow {
     const storedY = store.get('windowY');
 
     // macOS requires different handling to linux / win32
-    const customChrome: Pick<Electron.BrowserWindowConstructorOptions, 'titleBarStyle' | 'titleBarOverlay'> =
-      process.platform !== 'darwin' && useDesktopConfig().get('windowStyle') === 'custom'
-        ? {
-            titleBarStyle: 'hidden',
-            titleBarOverlay: nativeTheme.shouldUseDarkColors ? this.darkOverlay : this.lightOverlay,
-          }
-        : {};
+    const customChrome: Electron.BrowserWindowConstructorOptions = this.customWindowEnabled
+      ? {
+          titleBarStyle: 'hidden',
+          titleBarOverlay: nativeTheme.shouldUseDarkColors ? this.darkOverlay : this.lightOverlay,
+        }
+      : {};
 
     this.window = new BrowserWindow({
       title: 'ComfyUI',
@@ -77,9 +85,11 @@ export class AppWindow {
         webviewTag: true,
         devTools: true,
       },
+      show: false,
       autoHideMenuBar: true,
       ...customChrome,
     });
+    this.window.once('ready-to-show', () => this.window.show());
 
     if (!installed && storedX === undefined) this.window.center();
     if (store.get('windowMaximized')) this.window.maximize();
@@ -132,7 +142,8 @@ export class AppWindow {
 
   public async loadComfyUI(serverArgs: ServerArgs) {
     const host = serverArgs.host === '0.0.0.0' ? 'localhost' : serverArgs.host;
-    await this.window.loadURL(`http://${host}:${serverArgs.port}`);
+    const url = this.devUrlOverride ?? `http://${host}:${serverArgs.port}`;
+    await this.window.loadURL(url);
   }
 
   public openDevTools(): void {
@@ -164,9 +175,16 @@ export class AppWindow {
   }
 
   public async loadRenderer(urlPath: string = ''): Promise<void> {
-    if (process.env.DEV_SERVER_URL) {
-      const url = `${process.env.DEV_SERVER_URL}/${urlPath}`;
-      this.rendererReady = true; // TODO: Look into why dev server ready event is not being sent to main process.
+    const { devUrlOverride } = this;
+    if (devUrlOverride) {
+      const url = `${devUrlOverride}/${urlPath}`;
+      /**
+       * rendererReady should be set by the frontend via electronAPI. However,
+       * for some reason, the event is not being received if we load the app
+       * from the external server.
+       * TODO: Look into why dev server ready event is not being received.
+       */
+      this.rendererReady = true;
       log.info(`Loading development server ${url}`);
       await this.window.loadURL(url);
       this.window.webContents.openDevTools();
@@ -272,9 +290,9 @@ export class AppWindow {
   }
 
   changeTheme(options: TitleBarOverlayOptions): void {
-    if (process.platform === 'darwin' || useDesktopConfig().get('windowStyle') !== 'custom') return;
+    if (!this.customWindowEnabled) return;
 
-    if (options.height) options.height = Math.round(options.height);
+    options.height &&= Math.round(options.height);
     if (!options.height) delete options.height;
     this.window.setTitleBarOverlay(options);
   }
@@ -298,6 +316,7 @@ export class AppWindow {
     const tray = new Tray(trayImage);
 
     tray.setToolTip('ComfyUI');
+    tray.on('double-click', () => this.show());
 
     // For Mac you can have a separate icon when you press.
     // The current design language for Mac Eco System is White or Black icon then when you click it is in color

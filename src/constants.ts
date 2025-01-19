@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
   RENDERER_READY: 'renderer-ready',
   RESTART_APP: 'restart-app',
   REINSTALL: 'reinstall',
+  QUIT: 'quit',
   LOG_MESSAGE: 'log-message',
   OPEN_DIALOG: 'open-dialog',
   DOWNLOAD_PROGRESS: 'download-progress',
@@ -14,8 +15,8 @@ export const IPC_CHANNELS = {
   DELETE_MODEL: 'delete-model',
   GET_ALL_DOWNLOADS: 'get-all-downloads',
   GET_ELECTRON_VERSION: 'get-electron-version',
-  SEND_ERROR_TO_SENTRY: 'send-error-to-sentry',
   GET_BASE_PATH: 'get-base-path',
+  SET_BASE_PATH: 'set-base-path',
   GET_MODEL_CONFIG_PATH: 'get-model-config-path',
   OPEN_PATH: 'open-path',
   OPEN_LOGS_PATH: 'open-logs-path',
@@ -35,7 +36,18 @@ export const IPC_CHANNELS = {
   RESTART_CORE: 'restart-core',
   GET_GPU: 'get-gpu',
   SET_WINDOW_STYLE: 'set-window-style',
+  GET_VALIDATION_STATE: 'get-validation-state',
+  VALIDATION_UPDATE: 'validation-update',
+  COMPLETE_VALIDATION: 'complete-validation',
+  CANCEL_VALIDATION: 'cancel-validation',
+  VALIDATE_INSTALLATION: 'start-validation',
+  UV_INSTALL_REQUIREMENTS: 'uv-install-requirements',
   GET_WINDOW_STYLE: 'get-window-style',
+  TRACK_EVENT: 'track-event',
+  SET_METRICS_CONSENT: 'set-metrics-consent',
+  INCREMENT_USER_PROPERTY: 'increment-user-property',
+  UV_CLEAR_CACHE: 'uv-clear-cache',
+  UV_RESET_VENV: 'uv-delete-venv',
 } as const;
 
 export enum ProgressStatus {
@@ -61,15 +73,6 @@ export enum ProgressStatus {
    */
   ERROR = 'error',
 }
-
-export const ProgressMessages = {
-  [ProgressStatus.INITIAL_STATE]: 'Loading...',
-  [ProgressStatus.PYTHON_SETUP]: 'Setting up Python Environment...',
-  [ProgressStatus.STARTING_SERVER]: 'Starting ComfyUI server...',
-  [ProgressStatus.READY]: 'Finishing...',
-  [ProgressStatus.ERROR]:
-    'Was not able to start ComfyUI. Please check the logs for more details. You can open it from the Help menu. Please report issues to: https://forum.comfy.org',
-} as const;
 
 export type IPCChannel = (typeof IPC_CHANNELS)[keyof typeof IPC_CHANNELS];
 

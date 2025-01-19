@@ -1,14 +1,19 @@
 import log from 'electron-log/main';
 import path from 'node:path';
-import { getAppResourcesPath } from '../install/resourcePaths';
-import { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
 import { fileSync } from 'tmp';
 
-export class CmCli {
+import { getAppResourcesPath } from '../install/resourcePaths';
+import { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
+import { HasTelemetry, ITelemetry, trackEvent } from './telemetry';
+
+export class CmCli implements HasTelemetry {
   private cliPath: string;
   private virtualEnvironment: VirtualEnvironment;
 
-  constructor(virtualEnvironment: VirtualEnvironment) {
+  constructor(
+    virtualEnvironment: VirtualEnvironment,
+    readonly telemetry: ITelemetry
+  ) {
     this.virtualEnvironment = virtualEnvironment;
     this.cliPath = path.join(getAppResourcesPath(), 'ComfyUI', 'custom_nodes', 'ComfyUI-Manager', 'cm-cli.py');
   }
@@ -59,6 +64,7 @@ export class CmCli {
     return output;
   }
 
+  @trackEvent('migrate_flow:migrate_custom_nodes')
   public async restoreCustomNodes(fromComfyDir: string, callbacks: ProcessCallbacks) {
     const tmpFile = fileSync({ postfix: '.json' });
     try {

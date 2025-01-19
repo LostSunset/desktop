@@ -1,12 +1,14 @@
-import path from 'node:path';
-import { spawn, ChildProcess } from 'node:child_process';
-import log from 'electron-log/main';
-import { pathAccessible } from './utils';
 import { app } from 'electron';
+import log from 'electron-log/main';
 import pty from 'node-pty';
+import { ChildProcess, spawn } from 'node:child_process';
 import os, { EOL } from 'node:os';
-import { getDefaultShell } from './shell/util';
+import path from 'node:path';
+
 import type { TorchDeviceType } from './preload';
+import { HasTelemetry, ITelemetry, trackEvent } from './services/telemetry';
+import { getDefaultShell } from './shell/util';
+import { pathAccessible } from './utils';
 
 export type ProcessCallbacks = {
   onStdout?: (data: string) => void;
@@ -15,8 +17,11 @@ export type ProcessCallbacks = {
 
 /**
  * Manages a virtual Python environment using uv.
+ *
+ * Maintains its own node-pty instance; output from this is piped to the virtual terminal.
+ * @todo Split either installation or terminal management to a separate class.
  */
-export class VirtualEnvironment {
+export class VirtualEnvironment implements HasTelemetry {
   readonly venvRootPath: string;
   readonly venvPath: string;
   readonly pythonVersion: string;
@@ -29,6 +34,7 @@ export class VirtualEnvironment {
   readonly selectedDevice?: string;
   uvPty: pty.IPty | undefined;
 
+  /** @todo Refactor to `using` */
   get uvPtyInstance() {
     if (!this.uvPty) {
       const shell = getDefaultShell();
@@ -50,7 +56,12 @@ export class VirtualEnvironment {
     return this.uvPty;
   }
 
-  constructor(venvPath: string, selectedDevice: TorchDeviceType | undefined, pythonVersion: string = '3.12.8') {
+  constructor(
+    venvPath: string,
+    readonly telemetry: ITelemetry,
+    selectedDevice: TorchDeviceType | undefined,
+    pythonVersion: string = '3.12.8'
+  ) {
     this.venvRootPath = venvPath;
     this.pythonVersion = pythonVersion;
     this.selectedDevice = selectedDevice;
@@ -109,7 +120,10 @@ export class VirtualEnvironment {
       await this.createEnvironment(callbacks);
     } finally {
       const pid = this.uvPty?.pid;
-      if (pid) process.kill(pid);
+      if (pid) {
+        process.kill(pid);
+        this.uvPty = undefined;
+      }
     }
   }
 
@@ -137,31 +151,49 @@ export class VirtualEnvironment {
         log.info(`Virtual environment already exists at ${this.venvPath}`);
         return;
       }
-
-      log.info(`Creating virtual environment at ${this.venvPath} with python ${this.pythonVersion}`);
-
-      // Create virtual environment using uv
-      const args = ['venv', '--python', this.pythonVersion];
-      const { exitCode } = await this.runUvCommandAsync(args, callbacks);
-
-      if (exitCode !== 0) {
-        throw new Error(`Failed to create virtual environment: exit code ${exitCode}`);
-      }
-
-      const { exitCode: ensurepipExitCode } = await this.runPythonCommandAsync(['-m', 'ensurepip', '--upgrade']);
-      if (ensurepipExitCode !== 0) {
-        throw new Error(`Failed to upgrade pip: exit code ${ensurepipExitCode}`);
-      }
-
+      this.telemetry.track(`install_flow:virtual_environment_create_start`, {
+        python_version: this.pythonVersion,
+        device: this.selectedDevice,
+      });
+      await this.createVenvWithPython(callbacks);
+      await this.ensurePip(callbacks);
+      await this.installRequirements(callbacks);
+      this.telemetry.track(`install_flow:virtual_environment_create_end`);
       log.info(`Successfully created virtual environment at ${this.venvPath}`);
     } catch (error) {
+      this.telemetry.track(`install_flow:virtual_environment_create_error`, {
+        error_name: error instanceof Error ? error.name : 'UnknownError',
+        error_type: error instanceof Error ? error.constructor.name : typeof error,
+        error_message: error instanceof Error ? error.message : 'Unknown error occurred',
+      });
       log.error(`Error creating virtual environment: ${error}`);
       throw error;
     }
-
-    await this.installRequirements(callbacks);
   }
 
+  @trackEvent('install_flow:virtual_environment_create_python')
+  public async createVenvWithPython(callbacks?: ProcessCallbacks): Promise<void> {
+    log.info(`Creating virtual environment at ${this.venvPath} with python ${this.pythonVersion}`);
+    const args = ['venv', '--python', this.pythonVersion];
+    const { exitCode } = await this.runUvCommandAsync(args, callbacks);
+
+    if (exitCode !== 0) {
+      throw new Error(`Failed to create virtual environment: exit code ${exitCode}`);
+    }
+  }
+
+  @trackEvent('install_flow:virtual_environment_ensurepip')
+  public async ensurePip(callbacks?: ProcessCallbacks): Promise<void> {
+    const { exitCode: ensurepipExitCode } = await this.runPythonCommandAsync(
+      ['-m', 'ensurepip', '--upgrade'],
+      callbacks
+    );
+    if (ensurepipExitCode !== 0) {
+      throw new Error(`Failed to upgrade pip: exit code ${ensurepipExitCode}`);
+    }
+  }
+
+  @trackEvent('install_flow:virtual_environment_install_requirements')
   public async installRequirements(callbacks?: ProcessCallbacks): Promise<void> {
     // pytorch nightly is required for MPS
     if (process.platform === 'darwin') {
@@ -227,7 +259,7 @@ export class VirtualEnvironment {
    * @param args
    * @returns
    */
-  public async runUvCommandAsync(args: string[], callbacks?: ProcessCallbacks): Promise<{ exitCode: number | null }> {
+  private async runUvCommandAsync(args: string[], callbacks?: ProcessCallbacks): Promise<{ exitCode: number | null }> {
     const uvCommand = os.platform() === 'win32' ? `& "${this.uvPath}"` : this.uvPath;
     log.info(`Running uv command: ${uvCommand} ${args.join(' ')}`);
     return this.runPtyCommandAsync(`${uvCommand} ${args.map((a) => `"${a}"`).join(' ')}`, callbacks?.onStdout);
@@ -237,14 +269,13 @@ export class VirtualEnvironment {
     const id = Date.now();
     return new Promise((res) => {
       const endMarker = `_-end-${id}:`;
-      const input = `clear${EOL}${command}${EOL}echo "${endMarker}$?"`;
+      const input = `${command}\recho "${endMarker}$?"`;
       const dataReader = this.uvPtyInstance.onData((data) => {
-        const lines = data.split(/(\r\n|\n)/);
+        // Remove ansi sequences to see if this the exit marker
+        const lines = data.replaceAll(/\u001B\[[\d;?]*[A-Za-z]/g, '').split(/(\r\n|\n)/);
         for (const line of lines) {
-          // Remove ansi sequences to see if this the exit marker
-          const clean = line.replaceAll(/\u001B\[[\d;?]*[A-Za-z]/g, '');
-          if (clean.startsWith(endMarker)) {
-            const exit = clean.substring(endMarker.length).trim();
+          if (line.startsWith(endMarker)) {
+            const exit = line.substring(endMarker.length).trim();
             let exitCode: number;
             // Powershell outputs True / False for success
             if (exit === 'True') {
@@ -260,15 +291,13 @@ export class VirtualEnvironment {
               }
             }
             dataReader.dispose();
-            res({
-              exitCode,
-            });
+            res({ exitCode });
             break;
           }
         }
         onData?.(data);
       });
-      this.uvPtyInstance.write(`${input}${EOL}`);
+      this.uvPtyInstance.write(`${input}\r`);
     });
   }
 
@@ -277,11 +306,11 @@ export class VirtualEnvironment {
     args: string[],
     env: Record<string, string>,
     callbacks?: ProcessCallbacks,
-    cwd?: string
+    cwd: string = this.venvRootPath
   ): ChildProcess {
-    log.info(`Running command: ${command} ${args.join(' ')} in ${this.venvRootPath}`);
+    log.info(`Running command: ${command} ${args.join(' ')} in ${cwd}`);
     const childProcess: ChildProcess = spawn(command, args, {
-      cwd: cwd ?? this.venvRootPath,
+      cwd,
       env: {
         ...process.env,
         ...env,
@@ -331,44 +360,44 @@ export class VirtualEnvironment {
 
   private async installPytorch(callbacks?: ProcessCallbacks): Promise<void> {
     const { selectedDevice } = this;
+    const packages = ['torch', 'torchvision', 'torchaudio'];
 
     if (selectedDevice === 'cpu') {
       // CPU mode
       log.info('Installing PyTorch CPU');
-      await this.runUvCommandAsync(['pip', 'install', 'torch', 'torchvision', 'torchaudio'], callbacks);
+      const { exitCode } = await this.runUvCommandAsync(['pip', 'install', ...packages], callbacks);
+      if (exitCode !== 0) {
+        throw new Error(`Failed to install PyTorch CPU: exit code ${exitCode}`);
+      }
     } else if (selectedDevice === 'nvidia' || process.platform === 'win32') {
       // Win32 default
       log.info('Installing PyTorch CUDA 12.1');
-      await this.runUvCommandAsync(
-        [
-          'pip',
-          'install',
-          'torch',
-          'torchvision',
-          'torchaudio',
-          '--index-url',
-          'https://download.pytorch.org/whl/cu121',
-        ],
+      const { exitCode } = await this.runUvCommandAsync(
+        ['pip', 'install', ...packages, '--index-url', 'https://download.pytorch.org/whl/cu121'],
         callbacks
       );
+      if (exitCode !== 0) {
+        throw new Error(`Failed to install PyTorch CUDA 12.1: exit code ${exitCode}`);
+      }
     } else if (selectedDevice === 'mps' || process.platform === 'darwin') {
       // macOS default
       log.info('Installing PyTorch Nightly for macOS.');
-      await this.runUvCommandAsync(
+      const { exitCode } = await this.runUvCommandAsync(
         [
           'pip',
           'install',
           '-U',
           '--prerelease',
           'allow',
-          'torch',
-          'torchvision',
-          'torchaudio',
+          ...packages,
           '--extra-index-url',
           'https://download.pytorch.org/whl/nightly/cpu',
         ],
         callbacks
       );
+      if (exitCode !== 0) {
+        throw new Error(`Failed to install PyTorch Nightly: exit code ${exitCode}`);
+      }
     }
   }
 

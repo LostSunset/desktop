@@ -1,7 +1,7 @@
+import fs from 'fs-extra';
 import { spawnSync } from 'node:child_process';
 import * as os from 'node:os';
 import process from 'node:process';
-import fs from 'fs-extra';
 
 /** @param {{ appOutDir, packager, outDir }} arg0 */
 const preMake = () => {
@@ -20,19 +20,17 @@ const preMake = () => {
   }
 
   if (os.platform() === 'darwin') {
-    spawnSync('py -m pip install comfy-cli', [''], { shell: true, stdio: ['ignore', 'ignore', 'inherit'] });
-    spawnSync('yarn run make:assets:macos', [''], { shell: true, stdio: 'inherit' });
+    spawnSync('yarn run make:assets', [''], { shell: true, stdio: 'inherit' });
   }
 
   if (os.platform() === 'win32') {
-    spawnSync('py -m pip install comfy-cli', [''], { shell: true, stdio: ['ignore', 'ignore', 'inherit'] });
     const result = spawnSync(
       `python -c "import os,sysconfig;print(sysconfig.get_path(""scripts"",f""{os.name}_user""))"`,
       [''],
       { shell: true, stdio: 'pipe' }
     ).stdout.toString();
     const localPythonModulePath = `PATH=${result.replaceAll('\\', '\\\\').trim()};%PATH%`;
-    spawnSync(`set ${localPythonModulePath} && yarn run make:assets:${isNvidia ? 'nvidia' : 'cpu'}`, [''], {
+    spawnSync(`set ${localPythonModulePath} && yarn run make:assets`, [''], {
       shell: true,
       stdio: 'inherit',
     });

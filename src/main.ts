@@ -1,21 +1,28 @@
-import { IPC_CHANNELS, DEFAULT_SERVER_ARGS, ProgressStatus } from './constants';
-import { app, dialog, ipcMain, shell } from 'electron';
-import log from 'electron-log/main';
-import { findAvailablePort } from './utils';
 import dotenv from 'dotenv';
-import { AppWindow } from './main-process/appWindow';
-import { PathHandlers } from './handlers/pathHandlers';
-import { AppInfoHandlers } from './handlers/appInfoHandlers';
-import { ComfyDesktopApp } from './main-process/comfyDesktopApp';
+import { app, dialog, ipcMain, shell } from 'electron';
 import { LevelOption } from 'electron-log';
-import SentryLogging from './services/sentry';
-import { DesktopConfig } from './store/desktopConfig';
+import log from 'electron-log/main';
+
+import { DEFAULT_SERVER_ARGS, IPC_CHANNELS, ProgressStatus } from './constants';
+import { AppHandlers } from './handlers/AppHandlers';
+import { AppInfoHandlers } from './handlers/appInfoHandlers';
+import { PathHandlers } from './handlers/pathHandlers';
 import { InstallationManager } from './install/installationManager';
+import { AppWindow } from './main-process/appWindow';
+import { ComfyDesktopApp } from './main-process/comfyDesktopApp';
+import SentryLogging from './services/sentry';
+import { getTelemetry, promptMetricsConsent } from './services/telemetry';
+import { DesktopConfig } from './store/desktopConfig';
+import { findAvailablePort } from './utils';
 
 dotenv.config();
 log.initialize();
 log.transports.file.level = (process.env.LOG_LEVEL as LevelOption) ?? 'info';
+log.info(`Starting app v${app.getVersion()}`);
 
+const allowDevVars = app.commandLine.hasSwitch('dev-mode');
+
+const telemetry = getTelemetry();
 // Register the quit handlers regardless of single instance lock and before squirrel startup events.
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
@@ -35,6 +42,7 @@ app.on('before-quit', () => {
 });
 
 // Sentry needs to be initialized at the top level.
+log.verbose('Initializing Sentry');
 SentryLogging.init();
 
 // Synchronous app start
@@ -45,7 +53,8 @@ if (!gotTheLock) {
 } else {
   app.on('ready', () => {
     log.debug('App ready');
-
+    telemetry.registerHandlers();
+    telemetry.track('desktop:app_ready');
     startApp().catch((error) => {
       log.error('Unhandled exception in app startup', error);
       app.exit(2020);
@@ -56,8 +65,9 @@ if (!gotTheLock) {
 // Async app start
 async function startApp() {
   // Load config or exit
+  let store: DesktopConfig | undefined;
   try {
-    const store = await DesktopConfig.load(shell);
+    store = await DesktopConfig.load(shell);
     if (!store) throw new Error('Unknown error loading app config on startup.');
   } catch (error) {
     log.error('Unhandled exception during config load', error);
@@ -70,13 +80,23 @@ async function startApp() {
     // Create native window
     const appWindow = new AppWindow();
     appWindow.onClose(() => {
+      if (quitting) return;
       log.info('App window closed. Quitting application.');
       app.quit();
     });
 
+    // Load start screen - basic spinner
+    try {
+      await appWindow.loadRenderer('desktop-start');
+    } catch (error) {
+      dialog.showErrorBox('Startup failed', `Unknown error whilst loading start screen.\n\n${error}`);
+      return app.quit();
+    }
+
     // Register basic handlers that are necessary during app's installation.
     new PathHandlers().registerHandlers();
-    new AppInfoHandlers().registerHandlers();
+    new AppInfoHandlers().registerHandlers(appWindow);
+    new AppHandlers().registerHandlers();
     ipcMain.handle(IPC_CHANNELS.OPEN_DIALOG, (event, options: Electron.OpenDialogOptions) => {
       log.debug('Open dialog');
       return dialog.showOpenDialogSync({
@@ -86,25 +106,30 @@ async function startApp() {
 
     try {
       // Install / validate installation is complete
-      const installManager = new InstallationManager(appWindow);
+      const installManager = new InstallationManager(appWindow, telemetry);
       const installation = await installManager.ensureInstalled();
       if (!installation.isValid)
         throw new Error(`Fatal: Could not validate installation: [${installation.state}/${installation.issues.size}]`);
 
       // Initialize app
-      const comfyDesktopApp = ComfyDesktopApp.create(appWindow, installation.basePath);
+      const comfyDesktopApp = new ComfyDesktopApp(installation, appWindow, telemetry);
       await comfyDesktopApp.initialize();
+
+      // At this point, user has gone through the onboarding flow.
       SentryLogging.comfyDesktopApp = comfyDesktopApp;
+      const allowMetrics = await promptMetricsConsent(store, appWindow, comfyDesktopApp);
+      telemetry.hasConsent = allowMetrics;
+      if (allowMetrics) telemetry.flush();
 
       // Construct core launch args
-      const useExternalServer = process.env.USE_EXTERNAL_SERVER === 'true';
-      const cpuOnly: Record<string, string> = process.env.COMFYUI_CPU_ONLY === 'true' ? { cpu: '' } : {};
-      const extraServerArgs: Record<string, string> = {
-        ...comfyDesktopApp.comfySettings.get('Comfy.Server.LaunchArgs'),
-        ...cpuOnly,
-      };
-      const host = process.env.COMFY_HOST ?? extraServerArgs.listen ?? DEFAULT_SERVER_ARGS.host;
-      const targetPort = Number(process.env.COMFY_PORT ?? extraServerArgs.port ?? DEFAULT_SERVER_ARGS.port);
+      const useExternalServer = devOverride('USE_EXTERNAL_SERVER') === 'true';
+      // Shallow-clone the setting launch args to avoid mutation.
+      const extraServerArgs: Record<string, string> = Object.assign(
+        {},
+        comfyDesktopApp.comfySettings.get('Comfy.Server.LaunchArgs')
+      );
+      const host = devOverride('COMFY_HOST') ?? extraServerArgs.listen ?? DEFAULT_SERVER_ARGS.host;
+      const targetPort = Number(devOverride('COMFY_PORT') ?? extraServerArgs.port ?? DEFAULT_SERVER_ARGS.port);
       const port = useExternalServer ? targetPort : await findAvailablePort(host, targetPort, targetPort + 1000);
 
       // Remove listen and port from extraServerArgs so core launch args are used instead.
@@ -140,4 +165,14 @@ async function startApp() {
     log.error('Fatal error occurred during app pre-startup.', error);
     app.exit(2024);
   }
+}
+
+/**
+ * Always returns `undefined` in production, unless the `--dev-mode` command line argument is present.
+ *
+ * When running unpackaged or if the `--dev-mode` argument is present,
+ * the requested environment variable is returned, otherwise `undefined`.
+ */
+function devOverride(value: string) {
+  if (allowDevVars || !app.isPackaged) return process.env[value];
 }

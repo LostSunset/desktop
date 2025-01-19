@@ -1,5 +1,6 @@
 import { builtinModules } from 'node:module';
 import type { ConfigEnv, UserConfig } from 'vite';
+
 import pkg from './package.json';
 
 export const builtins = ['electron', ...builtinModules.flatMap((m) => [m, `node:${m}`])];
@@ -26,6 +27,7 @@ export function getBuildConfig(env: ConfigEnv): UserConfig {
 
     define: {
       __COMFYUI_VERSION__: JSON.stringify(pkg.config.comfyVersion),
+      __COMFYUI_DESKTOP_VERSION__: JSON.stringify(process.env.npm_package_version),
     },
   };
 }
