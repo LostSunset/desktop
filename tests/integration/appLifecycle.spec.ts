@@ -1,5 +1,4 @@
-import { type Locator, expect, test } from '@playwright/test';
-import { chromium } from '@playwright/test';
+import { type Locator, chromium, expect, test } from '@playwright/test';
 
 test('has title', async () => {
   const browser = await chromium.connectOverCDP('http://127.0.0.1:9000');
@@ -55,4 +54,15 @@ test('has title', async () => {
     await expect(button).toBeEnabled();
     await button.click();
   }
+});
+
+test('app quits when window is closed', async () => {
+  const browser = await chromium.connectOverCDP('http://127.0.0.1:9000');
+  const context = browser.contexts()[0];
+  const page = context.pages()[0];
+
+  await page.close();
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+
+  expect(browser.isConnected()).toBeFalsy();
 });

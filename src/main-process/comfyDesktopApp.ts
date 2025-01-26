@@ -1,36 +1,33 @@
 import * as Sentry from '@sentry/electron/main';
 import todesktop from '@todesktop/runtime';
-import { Notification, type TitleBarOverlayOptions, app, dialog, ipcMain } from 'electron';
+import { type TitleBarOverlayOptions, app, dialog, ipcMain } from 'electron';
 import log from 'electron-log/main';
-import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { graphics } from 'systeminformation';
 
-import { ComfyServerConfig } from '../config/comfyServerConfig';
-import { ComfySettings } from '../config/comfySettings';
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
+import { InstallationManager } from '../install/installationManager';
 import { DownloadManager } from '../models/DownloadManager';
 import { type ElectronContextMenuOptions } from '../preload';
-import { CmCli } from '../services/cmCli';
 import { HasTelemetry, ITelemetry } from '../services/telemetry';
 import { Terminal } from '../shell/terminal';
-import { DesktopConfig, useDesktopConfig } from '../store/desktopConfig';
-import { ansiCodes, getModelsDirectory } from '../utils';
-import { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
+import { getModelsDirectory } from '../utils';
+import { VirtualEnvironment } from '../virtualEnvironment';
 import { AppWindow } from './appWindow';
 import type { ComfyInstallation } from './comfyInstallation';
 import { ComfyServer } from './comfyServer';
 
 export class ComfyDesktopApp implements HasTelemetry {
   public comfyServer: ComfyServer | null = null;
-  public comfySettings: ComfySettings;
   private terminal: Terminal | null = null; // Only created after server starts.
   constructor(
     public installation: ComfyInstallation,
     public appWindow: AppWindow,
     readonly telemetry: ITelemetry
-  ) {
-    this.comfySettings = new ComfySettings(installation.basePath);
+  ) {}
+
+  get comfySettings() {
+    return this.installation.comfySettings;
   }
 
   get basePath() {
@@ -119,12 +116,12 @@ export class ComfyDesktopApp implements HasTelemetry {
         }
       }
     );
-    ipcMain.handle(IPC_CHANNELS.IS_FIRST_TIME_SETUP, () => {
-      return !ComfyServerConfig.exists();
-    });
+
+    // Replace the reinstall IPC handler.
+    ipcMain.removeHandler(IPC_CHANNELS.REINSTALL);
     ipcMain.handle(IPC_CHANNELS.REINSTALL, async () => {
       log.info('Reinstalling...');
-      await this.reinstall();
+      await InstallationManager.reinstall(this.installation);
     });
     // Restart core
     ipcMain.handle(IPC_CHANNELS.RESTART_CORE, async (): Promise<boolean> => {
@@ -148,69 +145,18 @@ export class ComfyDesktopApp implements HasTelemetry {
       });
     });
     log.info('Server start');
-    await this.appWindow.loadRenderer('server-start');
+    if (!this.appWindow.isOnPage('server-start')) {
+      await this.appWindow.loadPage('server-start');
+    }
 
     DownloadManager.getInstance(this.appWindow, getModelsDirectory(this.basePath));
 
-    this.appWindow.sendServerStartProgress(ProgressStatus.PYTHON_SETUP);
-
-    const processCallbacks: ProcessCallbacks = {
-      onStdout: (data) => {
-        log.info(data.replaceAll(ansiCodes, ''));
-        this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
-      },
-      onStderr: (data) => {
-        log.error(data.replaceAll(ansiCodes, ''));
-        this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
-      },
-    };
     const { virtualEnvironment } = this.installation;
-    await virtualEnvironment.create(processCallbacks);
-
-    const config = useDesktopConfig();
-    const customNodeMigrationError = await this.migrateCustomNodes(config, virtualEnvironment, processCallbacks);
 
     this.appWindow.sendServerStartProgress(ProgressStatus.STARTING_SERVER);
     this.comfyServer = new ComfyServer(this.basePath, serverArgs, virtualEnvironment, this.appWindow, this.telemetry);
     await this.comfyServer.start();
     this.initializeTerminal(virtualEnvironment);
-
-    if (customNodeMigrationError) {
-      // TODO: Replace with IPC callback to handle i18n (SoC).
-      new Notification({
-        title: 'Failed to migrate custom nodes',
-        body: customNodeMigrationError,
-      }).show();
-    }
-  }
-
-  /** @returns `undefined` if successful, or an error `string` on failure. */
-  async migrateCustomNodes(config: DesktopConfig, virtualEnvironment: VirtualEnvironment, callbacks: ProcessCallbacks) {
-    const fromPath = config.get('migrateCustomNodesFrom');
-    if (!fromPath) return;
-
-    log.info('Migrating custom nodes from:', fromPath);
-    try {
-      const cmCli = new CmCli(virtualEnvironment, virtualEnvironment.telemetry);
-      await cmCli.restoreCustomNodes(fromPath, callbacks);
-    } catch (error) {
-      log.error('Error migrating custom nodes:', error);
-      // TODO: Replace with IPC callback to handle i18n (SoC).
-      return error?.toString?.() ?? 'Error migrating custom nodes.';
-    } finally {
-      // Always remove the flag so the user doesnt get stuck here
-      config.delete('migrateCustomNodesFrom');
-    }
-  }
-
-  async uninstall(): Promise<void> {
-    await rm(ComfyServerConfig.configPath);
-    await useDesktopConfig().permanentlyDeleteConfigFile();
-  }
-
-  async reinstall(): Promise<void> {
-    await this.uninstall();
-    this.restart();
   }
 
   restart({ customMessage, delay }: { customMessage?: string; delay?: number } = {}): void {
@@ -234,7 +180,6 @@ export class ComfyDesktopApp implements HasTelemetry {
       return relaunchApplication(delay);
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     dialog
       .showMessageBox({
         type: 'question',
@@ -252,6 +197,9 @@ export class ComfyDesktopApp implements HasTelemetry {
         } else {
           log.info('User cancelled restart');
         }
+      })
+      .catch((error) => {
+        log.error('Error showing restart confirmation dialog:', error);
       });
   }
 }

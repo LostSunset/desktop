@@ -1,10 +1,13 @@
 import { IpcMainEvent, ipcMain } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Mock, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { MixpanelTelemetry, promptMetricsConsent } from '../../src/services/telemetry';
-import { IPC_CHANNELS } from '/src/constants';
+import type { ComfySettings } from '@/config/comfySettings';
+import { IPC_CHANNELS } from '@/constants';
+import type { AppWindow } from '@/main-process/appWindow';
+import { MixpanelTelemetry, promptMetricsConsent } from '@/services/telemetry';
+import type { DesktopConfig } from '@/store/desktopConfig';
 
 vi.mock('electron', () => ({
   app: {
@@ -14,7 +17,7 @@ vi.mock('electron', () => ({
   ipcMain: {
     on: vi.fn(),
     once: vi.fn(),
-    handle: vi.fn(),
+    handleOnce: vi.fn(),
     removeHandler: vi.fn(),
   },
 }));
@@ -52,7 +55,6 @@ describe('MixpanelTelemetry', () => {
       const existingId = 'existing-uuid';
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue(existingId);
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       expect(fs.readFileSync).toHaveBeenCalledWith(path.join('/mock/user/data', 'telemetry.txt'), 'utf8');
       expect(fs.writeFileSync).not.toHaveBeenCalled();
@@ -60,7 +62,6 @@ describe('MixpanelTelemetry', () => {
 
     it('should create new distinct ID if file does not exist', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
 
       expect(fs.writeFileSync).toHaveBeenCalled();
@@ -74,7 +75,6 @@ describe('MixpanelTelemetry', () => {
     it('should queue events when consent is not given', () => {
       const eventName = 'test_event';
       const properties = { foo: 'bar' };
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       telemetry.track(eventName, properties);
 
@@ -82,16 +82,13 @@ describe('MixpanelTelemetry', () => {
       expect(telemetry['queue'][0].eventName).toBe(eventName);
       expect(telemetry['queue'][0].properties).toMatchObject({
         ...properties,
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         distinct_id: expect.any(String),
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         time: expect.any(Date),
       });
     });
 
     it('should flush queue when consent is given', () => {
       const eventName = 'test_event';
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       telemetry.track(eventName);
 
@@ -110,7 +107,6 @@ describe('MixpanelTelemetry', () => {
 
   describe('IPC event handling', () => {
     it('should handle INSTALL_COMFYUI event and update consent', () => {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       const mockIpcEvent = {} as IpcMainEvent;
       const installOptionsHandler = vi.mocked(ipcMain.once).mock.calls[0][1];
@@ -119,7 +115,6 @@ describe('MixpanelTelemetry', () => {
     });
 
     it('should register ipc handler for TRACK_EVENT', () => {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       telemetry.registerHandlers();
 
@@ -127,7 +122,6 @@ describe('MixpanelTelemetry', () => {
     });
 
     it('should handle TRACK_EVENT messages', () => {
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       telemetry.registerHandlers();
       const trackEventHandler = vi.mocked(ipcMain.on).mock.calls[0][1];
@@ -151,7 +145,7 @@ describe('MixpanelTelemetry', () => {
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       telemetry.registerHandlers();
       // Get the callback that was registered
-      const [channel, callback] = (ipcMain.on as any).mock.calls.find(
+      const [, callback] = (ipcMain.on as any).mock.calls.find(
         ([channel]: any) => channel === IPC_CHANNELS.INCREMENT_USER_PROPERTY
       );
 
@@ -177,7 +171,6 @@ describe('MixpanelTelemetry', () => {
     };
 
     // Create telemetry instance with mock client
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-explicit-any
     const telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
 
     // Verify init was called
@@ -189,9 +182,9 @@ describe('MixpanelTelemetry', () => {
 });
 
 describe('promptMetricsConsent', () => {
-  let store: { get: Mock; set: Mock };
-  let appWindow: { loadRenderer: Mock };
-  let comfyDesktopApp: { comfySettings: { get: Mock } };
+  let store: Pick<DesktopConfig, 'get' | 'set'>;
+  let appWindow: Pick<AppWindow, 'loadPage'>;
+  let comfyDesktopApp: { comfySettings: Pick<ComfySettings, 'get' | 'set' | 'saveSettings'> };
 
   const versionBeforeUpdate = '0.4.1';
   const versionAfterUpdate = '1.0.1';
@@ -199,8 +192,8 @@ describe('promptMetricsConsent', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     store = { get: vi.fn(), set: vi.fn() };
-    appWindow = { loadRenderer: vi.fn() };
-    comfyDesktopApp = { comfySettings: { get: vi.fn() } };
+    appWindow = { loadPage: vi.fn() };
+    comfyDesktopApp = { comfySettings: { get: vi.fn(), set: vi.fn(), saveSettings: vi.fn() } };
   });
 
   const runTest = async ({
@@ -210,20 +203,19 @@ describe('promptMetricsConsent', () => {
     mockConsent,
     promptUser,
   }: {
-    storeValue: string | null | undefined;
+    storeValue: string | undefined;
     settingsValue: boolean | null | undefined;
     expectedResult: boolean;
     mockConsent?: boolean;
     promptUser?: boolean;
   }) => {
-    store.get.mockReturnValue(storeValue);
-    comfyDesktopApp.comfySettings.get.mockReturnValue(settingsValue);
+    vi.mocked(store.get).mockReturnValue(storeValue);
+    vi.mocked(comfyDesktopApp.comfySettings.get).mockReturnValue(settingsValue);
 
     if (promptUser) {
-      vi.mocked(ipcMain.handle).mockImplementationOnce((channel, handler) => {
+      vi.mocked(ipcMain.handleOnce).mockImplementationOnce((channel, handler) => {
         if (channel === IPC_CHANNELS.SET_METRICS_CONSENT) {
-          // @ts-expect-error - handler is a mock and doesn't implement the correct signature
-          handler(null, mockConsent);
+          handler(null!, mockConsent);
         }
       });
     }
@@ -244,8 +236,8 @@ describe('promptMetricsConsent', () => {
       promptUser: true,
     });
     expect(store.set).toHaveBeenCalled();
-    expect(appWindow.loadRenderer).toHaveBeenCalledWith('metrics-consent');
-    expect(ipcMain.handle).toHaveBeenCalledWith(IPC_CHANNELS.SET_METRICS_CONSENT, expect.any(Function));
+    expect(appWindow.loadPage).toHaveBeenCalledWith('metrics-consent');
+    expect(ipcMain.handleOnce).toHaveBeenCalledWith(IPC_CHANNELS.SET_METRICS_CONSENT, expect.any(Function));
   });
 
   it('should not show prompt if consent is up-to-date', async () => {
@@ -256,8 +248,8 @@ describe('promptMetricsConsent', () => {
     });
     expect(store.get).toHaveBeenCalledWith('versionConsentedMetrics');
     expect(store.set).not.toHaveBeenCalled();
-    expect(appWindow.loadRenderer).not.toHaveBeenCalled();
-    expect(ipcMain.handle).not.toHaveBeenCalled();
+    expect(appWindow.loadPage).not.toHaveBeenCalled();
+    expect(ipcMain.handleOnce).not.toHaveBeenCalled();
   });
 
   it('should return true if consent is up-to-date and metrics enabled', async () => {
@@ -276,8 +268,8 @@ describe('promptMetricsConsent', () => {
       expectedResult: false,
     });
     expect(store.set).not.toHaveBeenCalled();
-    expect(appWindow.loadRenderer).not.toHaveBeenCalled();
-    expect(ipcMain.handle).not.toHaveBeenCalled();
+    expect(appWindow.loadPage).not.toHaveBeenCalled();
+    expect(ipcMain.handleOnce).not.toHaveBeenCalled();
   });
 
   it('should return false if consent is out-of-date and metrics are disabled', async () => {
@@ -287,8 +279,8 @@ describe('promptMetricsConsent', () => {
       expectedResult: false,
     });
     expect(store.set).toHaveBeenCalled();
-    expect(appWindow.loadRenderer).not.toHaveBeenCalled();
-    expect(ipcMain.handle).not.toHaveBeenCalled();
+    expect(appWindow.loadPage).not.toHaveBeenCalled();
+    expect(ipcMain.handleOnce).not.toHaveBeenCalled();
   });
 
   it('should update consent to false if the user denies', async () => {
@@ -300,8 +292,8 @@ describe('promptMetricsConsent', () => {
       promptUser: true,
     });
     expect(store.set).toHaveBeenCalled();
-    expect(appWindow.loadRenderer).toHaveBeenCalledWith('metrics-consent');
-    expect(ipcMain.handle).toHaveBeenCalledWith(IPC_CHANNELS.SET_METRICS_CONSENT, expect.any(Function));
+    expect(appWindow.loadPage).toHaveBeenCalledWith('metrics-consent');
+    expect(ipcMain.handleOnce).toHaveBeenCalledWith(IPC_CHANNELS.SET_METRICS_CONSENT, expect.any(Function));
   });
 
   it('should return false if previous metrics setting is null', async () => {
@@ -311,8 +303,8 @@ describe('promptMetricsConsent', () => {
       expectedResult: false,
     });
     expect(store.set).toHaveBeenCalled();
-    expect(appWindow.loadRenderer).not.toHaveBeenCalled();
-    expect(ipcMain.handle).not.toHaveBeenCalled();
+    expect(appWindow.loadPage).not.toHaveBeenCalled();
+    expect(ipcMain.handleOnce).not.toHaveBeenCalled();
   });
 
   it('should prompt for update if versionConsentedMetrics is undefined', async () => {
@@ -324,19 +316,19 @@ describe('promptMetricsConsent', () => {
       promptUser: true,
     });
     expect(store.set).toHaveBeenCalled();
-    expect(appWindow.loadRenderer).toHaveBeenCalledWith('metrics-consent');
-    expect(ipcMain.handle).toHaveBeenCalledWith(IPC_CHANNELS.SET_METRICS_CONSENT, expect.any(Function));
+    expect(appWindow.loadPage).toHaveBeenCalledWith('metrics-consent');
+    expect(ipcMain.handleOnce).toHaveBeenCalledWith(IPC_CHANNELS.SET_METRICS_CONSENT, expect.any(Function));
   });
 
   it('should return false if both settings are null or undefined', async () => {
     await runTest({
-      storeValue: null,
+      storeValue: undefined,
       settingsValue: null,
       expectedResult: false,
     });
     expect(store.set).toHaveBeenCalled();
-    expect(appWindow.loadRenderer).not.toHaveBeenCalled();
-    expect(ipcMain.handle).not.toHaveBeenCalled();
+    expect(appWindow.loadPage).not.toHaveBeenCalled();
+    expect(ipcMain.handleOnce).not.toHaveBeenCalled();
   });
 
   it('should return false if metrics are disabled and consent is null', async () => {
@@ -346,7 +338,7 @@ describe('promptMetricsConsent', () => {
       expectedResult: false,
     });
     expect(store.set).toHaveBeenCalled();
-    expect(appWindow.loadRenderer).not.toHaveBeenCalled();
-    expect(ipcMain.handle).not.toHaveBeenCalled();
+    expect(appWindow.loadPage).not.toHaveBeenCalled();
+    expect(ipcMain.handleOnce).not.toHaveBeenCalled();
   });
 });

@@ -25,7 +25,6 @@ export const IPC_CHANNELS = {
   TERMINAL_RESIZE: 'resize-terminal',
   TERMINAL_RESTORE: 'restore-terminal',
   TERMINAL_ON_OUTPUT: 'terminal-output',
-  IS_FIRST_TIME_SETUP: 'is-first-time-setup',
   GET_SYSTEM_PATHS: 'get-system-paths',
   VALIDATE_INSTALL_PATH: 'validate-install-path',
   VALIDATE_COMFYUI_SOURCE: 'validate-comfyui-source',
@@ -48,6 +47,7 @@ export const IPC_CHANNELS = {
   INCREMENT_USER_PROPERTY: 'increment-user-property',
   UV_CLEAR_CACHE: 'uv-clear-cache',
   UV_RESET_VENV: 'uv-delete-venv',
+  CAN_ACCESS_URL: 'can-access-url',
 } as const;
 
 export enum ProgressStatus {

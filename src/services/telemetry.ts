@@ -20,6 +20,10 @@ export interface ITelemetry {
   track(eventName: string, properties?: PropertyDict): void;
   flush(): void;
   registerHandlers(): void;
+  queueSentryEvent(props: MixPanelEvent): void;
+  popSentryEvent(): MixPanelEvent | undefined;
+  hasPendingSentryEvents(): boolean;
+  clearSentryQueue(): void;
 }
 
 interface GpuInfo {
@@ -28,14 +32,20 @@ interface GpuInfo {
   vram: number | null;
 }
 
+interface MixPanelEvent {
+  eventName: string;
+  properties: Record<string, unknown>;
+}
+
 const MIXPANEL_TOKEN = '6a7f9f6ae2084b4e7ff7ced98a6b5988';
-export class MixpanelTelemetry {
+export class MixpanelTelemetry implements ITelemetry {
   public hasConsent: boolean = false;
-  private distinctId: string;
+  private readonly distinctId: string;
   private readonly storageFile: string;
-  private queue: { eventName: string; properties: PropertyDict }[] = [];
-  private mixpanelClient: mixpanel.Mixpanel;
+  private readonly queue: MixPanelEvent[] = [];
+  private readonly mixpanelClient: mixpanel.Mixpanel;
   private cachedGpuInfo: GpuInfo[] | null = null;
+  private sentryQueue: MixPanelEvent[] = [];
   constructor(mixpanelClass: mixpanel.Mixpanel) {
     this.mixpanelClient = mixpanelClass.init(MIXPANEL_TOKEN, {
       geolocate: true,
@@ -128,6 +138,22 @@ export class MixpanelTelemetry {
     });
   }
 
+  hasPendingSentryEvents() {
+    return this.sentryQueue.length > 0;
+  }
+
+  queueSentryEvent(props: MixPanelEvent) {
+    this.sentryQueue.push(props);
+  }
+
+  popSentryEvent() {
+    return this.sentryQueue.shift();
+  }
+
+  clearSentryQueue() {
+    this.sentryQueue = [];
+  }
+
   /**
    * Fetch GPU information and cache it.
    */
@@ -156,7 +182,7 @@ export class MixpanelTelemetry {
 
   private mixpanelTrack(eventName: string, properties: PropertyDict): void {
     if (app.isPackaged) {
-      log.info(`Tracking ${eventName} with properties ${JSON.stringify(properties)}`);
+      log.debug(`Tracking ${eventName} with properties ${JSON.stringify(properties)}`);
       this.mixpanelClient.track(eventName, properties);
     } else {
       log.info(`Would have tracked ${eventName} with properties ${JSON.stringify(properties)}`);
@@ -201,13 +227,14 @@ export function trackEvent(eventName: string) {
           .then(() => {
             this.telemetry.track(`${eventName}_end`);
           })
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any
-          .catch((error: any) => {
-            this.telemetry.track(`${eventName}_error`, {
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-              error_message: error.message,
-              // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-              error_name: error.name,
+          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+          .catch((error: Error) => {
+            this.telemetry.queueSentryEvent({
+              eventName: `${eventName}_error`,
+              properties: {
+                error_message: error.message,
+                error_name: error.name,
+              },
             });
             throw error;
           })
@@ -224,23 +251,26 @@ export async function promptMetricsConsent(
   appWindow: AppWindow,
   comfyDesktopApp: ComfyDesktopApp
 ): Promise<boolean> {
-  const isMetricsEnabled = comfyDesktopApp.comfySettings.get('Comfy-Desktop.SendStatistics') ?? false;
+  const consent = comfyDesktopApp.comfySettings.get('Comfy-Desktop.SendStatistics') ?? false;
   const consentedOn = store.get('versionConsentedMetrics');
-  const isOutdated = !consentedOn || compareVersions(consentedOn, '0.4.8') < 0;
-  if (!isOutdated) return isMetricsEnabled;
+  const isOutdated = !consentedOn || compareVersions(consentedOn, '0.4.12') < 0;
+  if (!isOutdated) return consent;
 
   store.set('versionConsentedMetrics', __COMFYUI_DESKTOP_VERSION__);
-  if (isMetricsEnabled) {
+  if (consent) {
     const consentPromise = new Promise<boolean>((resolve) => {
-      ipcMain.handle(IPC_CHANNELS.SET_METRICS_CONSENT, (_event, consent: boolean) => {
-        resolve(consent);
-        ipcMain.removeHandler(IPC_CHANNELS.SET_METRICS_CONSENT);
-      });
+      ipcMain.handleOnce(IPC_CHANNELS.SET_METRICS_CONSENT, (_event, consent: boolean) => resolve(consent));
     });
 
-    await appWindow.loadRenderer('metrics-consent');
-    return consentPromise;
+    await appWindow.loadPage('metrics-consent');
+    const newConsent = await consentPromise;
+    if (newConsent !== consent) {
+      comfyDesktopApp.comfySettings.set('Comfy-Desktop.SendStatistics', newConsent);
+      await comfyDesktopApp.comfySettings.saveSettings();
+    }
+
+    return newConsent;
   }
 
-  return isMetricsEnabled;
+  return consent;
 }

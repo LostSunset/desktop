@@ -14,6 +14,7 @@ import {
 import log from 'electron-log/main';
 import Store from 'electron-store';
 import path from 'node:path';
+import { URL } from 'node:url';
 
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
 import { getAppResourcesPath } from '../install/resourcePaths';
@@ -21,22 +22,25 @@ import type { ElectronContextMenuOptions } from '../preload';
 import { AppWindowSettings } from '../store/AppWindowSettings';
 import { useDesktopConfig } from '../store/desktopConfig';
 
+/** A frontend page that can be loaded by the app. Must be a valid entry in the frontend router. @see {@link AppWindow.isOnPage} */
+type Page = 'desktop-start' | 'welcome' | 'not-supported' | 'metrics-consent' | 'server-start' | '' | 'maintenance';
+
 /**
  * Creates a single application window that displays the renderer and encapsulates all the logic for sending messages to the renderer.
  * Closes the application when the window is closed.
  */
 export class AppWindow {
-  private window: BrowserWindow;
+  private readonly window: BrowserWindow;
   /** Volatile store containing window config - saves window state between launches. */
-  private store: Store<AppWindowSettings>;
-  private messageQueue: Array<{ channel: string; data: unknown }> = [];
+  private readonly store: Store<AppWindowSettings>;
+  private readonly messageQueue: Array<{ channel: string; data: unknown }> = [];
   private rendererReady: boolean = false;
   /** Default dark mode config for system window overlay (min/max/close window). */
-  private darkOverlay = { color: '#00000000', symbolColor: '#ddd' };
+  private readonly darkOverlay = { color: '#00000000', symbolColor: '#ddd' };
   /** Default light mode config for system window overlay (min/max/close window). */
-  private lightOverlay = { ...this.darkOverlay, symbolColor: '#333' };
+  private readonly lightOverlay = { ...this.darkOverlay, symbolColor: '#333' };
   /** The application menu. */
-  private menu: Electron.Menu | null;
+  private readonly menu: Electron.Menu | null;
   /** The "edit" menu - cut/copy/paste etc. */
   private editMenu?: Menu;
   /** Whether this window was created with title bar overlay enabled. When `false`, Electron throws when calling {@link BrowserWindow.setTitleBarOverlay}. */
@@ -174,10 +178,30 @@ export class AppWindow {
     this.window.maximize();
   }
 
-  public async loadRenderer(urlPath: string = ''): Promise<void> {
+  /**
+   * Checks if the window is currently on the specified page by parsing the browser URL.
+   * @param page The frontend route portion of the URL to match against
+   * @returns `true` if the window is currently on the specified page, otherwise `false`
+   */
+  isOnPage(page: Page): boolean {
+    const rawUrl = this.window.webContents.getURL();
+    const url = new URL(rawUrl);
+    if (!url) return page === '';
+
+    const prefixedPage = url.protocol === 'file:' ? url.hash : url.pathname;
+    return page === prefixedPage.slice(1);
+  }
+
+  /**
+   * Loads a frontend page.
+   *
+   * In production, this is via the file:// protocol. Dev environments can utilise a dev server.
+   * @param page The page to load; a valid entry in the frontend router.
+   */
+  public async loadPage(page: Page): Promise<void> {
     const { devUrlOverride } = this;
     if (devUrlOverride) {
-      const url = `${devUrlOverride}/${urlPath}`;
+      const url = `${devUrlOverride}/${page}`;
       /**
        * rendererReady should be set by the frontend via electronAPI. However,
        * for some reason, the event is not being received if we load the app
@@ -186,12 +210,12 @@ export class AppWindow {
        */
       this.rendererReady = true;
       log.info(`Loading development server ${url}`);
+      if (process.env.DEV_TOOLS_AUTO === 'true') this.window.webContents.openDevTools();
       await this.window.loadURL(url);
-      this.window.webContents.openDevTools();
     } else {
       const appResourcesPath = getAppResourcesPath();
       const frontendPath = path.join(appResourcesPath, 'ComfyUI', 'web_custom_versions', 'desktop_app');
-      await this.window.loadFile(path.join(frontendPath, 'index.html'), { hash: urlPath });
+      await this.window.loadFile(path.join(frontendPath, 'index.html'), { hash: page });
     }
   }
 
@@ -331,8 +355,9 @@ export class AppWindow {
           this.show();
           // Mac Only
           if (process.platform === 'darwin') {
-            // eslint-disable-next-line @typescript-eslint/no-floating-promises
-            app.dock.show();
+            app.dock.show().catch((error) => {
+              log.error('Error showing dock', error);
+            });
           }
         },
       },
@@ -371,13 +396,16 @@ export class AppWindow {
       const aboutMenuItem = {
         label: 'About ComfyUI',
         click: () => {
-          // eslint-disable-next-line @typescript-eslint/no-floating-promises
-          dialog.showMessageBox({
-            title: 'About',
-            message: `ComfyUI v${app.getVersion()}`,
-            detail: 'Created by Comfy Org\nCopyright © 2024',
-            buttons: ['OK'],
-          });
+          dialog
+            .showMessageBox({
+              title: 'About',
+              message: `ComfyUI v${app.getVersion()}`,
+              detail: 'Created by Comfy Org\nCopyright © 2024',
+              buttons: ['OK'],
+            })
+            .catch((error) => {
+              log.error('Error showing about dialog', error);
+            });
         },
       };
       const helpMenuItem = menu.items.find((item) => item.role === 'help');

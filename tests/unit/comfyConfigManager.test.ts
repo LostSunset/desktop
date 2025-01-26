@@ -2,7 +2,7 @@ import fs, { type PathLike } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ComfyConfigManager, DirectoryStructure } from '../../src/config/comfyConfigManager';
+import { ComfyConfigManager, DirectoryStructure } from '@/config/comfyConfigManager';
 
 // Workaround for mock impls.
 const { normalize } = path;
@@ -90,6 +90,18 @@ describe('ComfyConfigManager', () => {
       expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/user'), { recursive: true });
       expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/output'), { recursive: true });
       expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/custom_nodes'), { recursive: true });
+    });
+
+    it('should catch and log errors when creating directories', async () => {
+      vi.mocked(fs.mkdirSync).mockImplementationOnce(() => {
+        throw new Error('Permission denied');
+      });
+
+      const log = await import('electron-log/main');
+      ComfyConfigManager.createComfyDirectories('/fake/path/ComfyUI');
+
+      expect(fs.mkdirSync).toHaveBeenCalled();
+      expect(vi.mocked(log.default.error)).toHaveBeenCalledWith(expect.stringContaining('Permission denied'));
     });
   });
 

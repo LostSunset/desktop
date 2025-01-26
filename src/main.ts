@@ -4,9 +4,10 @@ import { LevelOption } from 'electron-log';
 import log from 'electron-log/main';
 
 import { DEFAULT_SERVER_ARGS, IPC_CHANNELS, ProgressStatus } from './constants';
-import { AppHandlers } from './handlers/AppHandlers';
-import { AppInfoHandlers } from './handlers/appInfoHandlers';
-import { PathHandlers } from './handlers/pathHandlers';
+import { registerAppHandlers } from './handlers/AppHandlers';
+import { registerAppInfoHandlers } from './handlers/appInfoHandlers';
+import { registerNetworkHandlers } from './handlers/networkHandlers';
+import { registerPathHandlers } from './handlers/pathHandlers';
 import { InstallationManager } from './install/installationManager';
 import { AppWindow } from './main-process/appWindow';
 import { ComfyDesktopApp } from './main-process/comfyDesktopApp';
@@ -24,21 +25,23 @@ const allowDevVars = app.commandLine.hasSwitch('dev-mode');
 
 const telemetry = getTelemetry();
 // Register the quit handlers regardless of single instance lock and before squirrel startup events.
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+// Quit when all windows are closed.
 app.on('window-all-closed', () => {
-  log.info('Window all closed');
-  if (process.platform !== 'darwin') {
-    log.info('Quitting ComfyUI because window all closed');
-    app.quit();
-  }
+  log.info('Quitting ComfyUI because window all closed');
+  app.quit();
 });
 
 // Suppress unhandled exception dialog when already quitting.
 let quitting = false;
 app.on('before-quit', () => {
   quitting = true;
+});
+
+app.on('quit', (event, exitCode) => {
+  telemetry.track('desktop:app_quit', {
+    reason: event,
+    exitCode,
+  });
 });
 
 // Sentry needs to be initialized at the top level.
@@ -79,24 +82,21 @@ async function startApp() {
   try {
     // Create native window
     const appWindow = new AppWindow();
-    appWindow.onClose(() => {
-      if (quitting) return;
-      log.info('App window closed. Quitting application.');
-      app.quit();
-    });
+    appWindow.onClose(() => log.info('App window closed.'));
 
     // Load start screen - basic spinner
     try {
-      await appWindow.loadRenderer('desktop-start');
+      await appWindow.loadPage('desktop-start');
     } catch (error) {
       dialog.showErrorBox('Startup failed', `Unknown error whilst loading start screen.\n\n${error}`);
       return app.quit();
     }
 
     // Register basic handlers that are necessary during app's installation.
-    new PathHandlers().registerHandlers();
-    new AppInfoHandlers().registerHandlers(appWindow);
-    new AppHandlers().registerHandlers();
+    registerPathHandlers();
+    registerNetworkHandlers();
+    registerAppInfoHandlers(appWindow);
+    registerAppHandlers();
     ipcMain.handle(IPC_CHANNELS.OPEN_DIALOG, (event, options: Electron.OpenDialogOptions) => {
       log.debug('Open dialog');
       return dialog.showOpenDialogSync({
@@ -108,8 +108,6 @@ async function startApp() {
       // Install / validate installation is complete
       const installManager = new InstallationManager(appWindow, telemetry);
       const installation = await installManager.ensureInstalled();
-      if (!installation.isValid)
-        throw new Error(`Fatal: Could not validate installation: [${installation.state}/${installation.issues.size}]`);
 
       // Initialize app
       const comfyDesktopApp = new ComfyDesktopApp(installation, appWindow, telemetry);

@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { DownloadStatus, ELECTRON_BRIDGE_API, IPC_CHANNELS, ProgressStatus } from './constants';
 import type { DownloadState } from './models/DownloadManager';
-import type { DesktopSettings } from './store/desktopSettings';
+import type { DesktopInstallState, DesktopWindowStyle } from './store/desktopSettings';
 
 /**
  * Open a folder in the system's default file explorer.
@@ -26,6 +26,11 @@ export interface InstallOptions {
   migrationItemIds?: string[];
   /** Torch compute device */
   device: TorchDeviceType;
+  /** UV python mirror */
+  pythonMirror?: string; // UV_PYTHON_INSTALL_MIRROR
+  /** pip mirrors */
+  pypiMirror?: string; // Common pip install mirror
+  torchMirror?: string; // Torch install mirror
 }
 
 export interface SystemPaths {
@@ -81,14 +86,12 @@ export type PathValidationResult = {
   error?: string;
 };
 
-/** Whether the app just been installed, upgraded, or install is complete and the server has been started at least once. */
-export type InstallState = Exclude<DesktopSettings['installState'], undefined>;
-
 export type ValidationIssueState = 'OK' | 'warning' | 'error' | 'skipped';
 
 export interface InstallValidation {
   inProgress: boolean;
-  installState: InstallState;
+  /** Whether the app just been installed, upgraded, or install is complete and the server has been started at least once. */
+  installState: DesktopInstallState;
 
   basePath?: ValidationIssueState;
   venvDirectory?: ValidationIssueState;
@@ -248,12 +251,6 @@ const electronAPI = {
     },
   },
   /**
-   * Check if the user has completed the first time setup wizard.
-   */
-  isFirstTimeSetup: (): Promise<boolean> => {
-    return ipcRenderer.invoke(IPC_CHANNELS.IS_FIRST_TIME_SETUP);
-  },
-  /**
    * Get the system paths for the application.
    */
   getSystemPaths: (): Promise<SystemPaths> => {
@@ -310,10 +307,10 @@ const electronAPI = {
       return await ipcRenderer.invoke(IPC_CHANNELS.GET_GPU);
     },
     /** Sets the window style */
-    setWindowStyle: (style: DesktopSettings['windowStyle']): Promise<void> => {
+    setWindowStyle: (style: DesktopWindowStyle): Promise<void> => {
       return ipcRenderer.invoke(IPC_CHANNELS.SET_WINDOW_STYLE, style);
     },
-    getWindowStyle: (): Promise<DesktopSettings['windowStyle']> => {
+    getWindowStyle: (): Promise<DesktopWindowStyle | undefined> => {
       return ipcRenderer.invoke(IPC_CHANNELS.GET_WINDOW_STYLE);
     },
   },
@@ -324,6 +321,11 @@ const electronAPI = {
 
     incrementUserProperty: (propertyName: string, number: number): void => {
       ipcRenderer.send(IPC_CHANNELS.INCREMENT_USER_PROPERTY, propertyName, number);
+    },
+  },
+  NetWork: {
+    canAccessUrl: (url: string, options?: { timeout?: number }): Promise<boolean> => {
+      return ipcRenderer.invoke(IPC_CHANNELS.CAN_ACCESS_URL, url, options);
     },
   },
   /** Restart the python server without restarting desktop. */

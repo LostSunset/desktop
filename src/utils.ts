@@ -2,6 +2,7 @@ import log from 'electron-log/main';
 import { exec } from 'node:child_process';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
+import https from 'node:https';
 import net from 'node:net';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -18,6 +19,34 @@ export async function pathAccessible(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function canExecute(path: string): Promise<boolean> {
+  try {
+    await fsPromises.access(path, fsPromises.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Attempts to execute a command in the native shell, ignoring output and only examining the exit code.
+ * e.g. Check if `git` is present in path and executable, without reimpl. cross-platform PATH search logic or using ancient imports.
+ * Returns false if killed, times out, or returns a non-zero exit code.
+ * @param command The command to execute
+ * @param timeout The maximum time the command may run for before being killed, in milliseconds
+ * @returns `true` if the command executed successfully, otherwise `false`
+ */
+export async function canExecuteShellCommand(command: string, timeout = 5000): Promise<boolean> {
+  const proc = exec(command);
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      proc.kill();
+      reject(new Error('Timed out attempting to execute git'));
+    }, timeout);
+    proc.on('exit', (code) => resolve(code === 0));
+  });
 }
 
 export async function containsDirectory(path: string, contains: string): Promise<boolean> {
@@ -112,6 +141,7 @@ interface HardwareValidation {
  */
 export async function validateHardware(): Promise<HardwareValidation> {
   log.verbose('Validating hardware.');
+
   try {
     // Only ARM Macs are supported.
     if (process.platform === 'darwin') {
@@ -133,8 +163,9 @@ export async function validateHardware(): Promise<HardwareValidation> {
       const graphics = await si.graphics();
       const hasNvidia = graphics.controllers.some((controller) => controller.vendor.toLowerCase().includes('nvidia'));
 
-      if (process.env.CI) {
-        return { isValid: true }; // Temporary workaround for testing with Playwright
+      if (process.env.SKIP_HARDWARE_VALIDATION) {
+        console.log('Skipping hardware validation');
+        return { isValid: true };
       }
 
       if (!hasNvidia) {
@@ -193,4 +224,32 @@ export function compareVersions(versionA: string, versionB: string): number {
   }
 
   return 0;
+}
+
+/**
+ * Check if a URL is accessible.
+ * @param url The URL to check
+ * @param options The options to use for the request
+ * @returns `true` if the URL is accessible, otherwise `false`
+ */
+export function canAccessUrl(url: string, options?: { timeout?: number }): Promise<boolean> {
+  const timeout = options?.timeout ?? 5000;
+
+  return new Promise((resolve) => {
+    const req = https.get(url, { timeout }, (res) => {
+      const statusCode = res.statusCode ?? 0;
+      res.destroy(); // Clean up the stream
+      resolve(statusCode >= 200 && statusCode < 300);
+    });
+
+    req.on('error', (error) => {
+      log.error('Error checking URL access:', error);
+      resolve(false);
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
 }
