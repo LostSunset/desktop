@@ -1,30 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ComfyServerConfig } from '@/config/comfyServerConfig';
+import { ComfySettings } from '@/config/comfySettings';
 import { IPC_CHANNELS } from '@/constants';
 import { InstallationManager } from '@/install/installationManager';
 import type { AppWindow } from '@/main-process/appWindow';
 import { ComfyInstallation } from '@/main-process/comfyInstallation';
 import type { InstallValidation } from '@/preload';
 import type { ITelemetry } from '@/services/telemetry';
+import { useDesktopConfig } from '@/store/desktopConfig';
 import * as utils from '@/utils';
 
 vi.mock('electron', () => ({
   ipcMain: {
     handle: vi.fn(),
-    handleOnce: vi.fn(),
     removeHandler: vi.fn(),
-    once: vi.fn(),
-  },
-  app: {
-    getPath: vi.fn().mockReturnValue('/mock/path'),
-    getAppPath: vi.fn().mockReturnValue('/mock/app/path'),
-    isPackaged: false,
-    quit: vi.fn(),
-    relaunch: vi.fn(),
-  },
-  dialog: {
-    showErrorBox: vi.fn(),
   },
 }));
 
@@ -32,7 +22,18 @@ vi.mock('node:fs/promises', () => ({
   rm: vi.fn(),
 }));
 
-vi.mock('@/store/desktopConfig');
+vi.mock('@/store/desktopConfig', () => ({
+  useDesktopConfig: vi.fn().mockReturnValue({
+    get: vi.fn().mockImplementation((key: string) => {
+      if (key === 'installState') return 'installed';
+      if (key === 'basePath') return 'valid/base';
+    }),
+    set: vi.fn().mockImplementation((key: string, value: string) => {
+      if (key !== 'basePath') throw new Error(`Unexpected key: ${key}`);
+      if (!value) throw new Error(`Unexpected value: [${value}]`);
+    }),
+  }),
+}));
 vi.mock('electron-log/main');
 
 vi.mock('@/utils', async () => {
@@ -40,7 +41,8 @@ vi.mock('@/utils', async () => {
   return {
     ...actual,
     pathAccessible: vi.fn().mockImplementation((path: string) => {
-      return Promise.resolve(path.startsWith('valid/'));
+      const isValid = path.startsWith('valid/') || path.endsWith(`\\System32\\vcruntime140.dll`);
+      return Promise.resolve(isValid);
     }),
     canExecute: vi.fn().mockResolvedValue(true),
     canExecuteShellCommand: vi.fn().mockResolvedValue(true),
@@ -119,8 +121,13 @@ describe('InstallationManager', () => {
 
   describe('ensureInstalled', () => {
     it('returns existing valid installation', async () => {
-      const installation = new ComfyInstallation('installed', 'valid/base', createMockTelemetry());
-      vi.spyOn(ComfyInstallation, 'fromConfig').mockReturnValue(installation);
+      const installation = new ComfyInstallation(
+        'installed',
+        'valid/base',
+        createMockTelemetry(),
+        new ComfySettings('valid/base')
+      );
+      vi.spyOn(ComfyInstallation, 'fromConfig').mockResolvedValue(installation);
 
       const result = await manager.ensureInstalled();
 
@@ -134,9 +141,9 @@ describe('InstallationManager', () => {
       {
         scenario: 'detects invalid base path',
         mockSetup: () => {
-          vi.mocked(ComfyServerConfig.readBasePathFromConfig).mockResolvedValue({
-            status: 'success',
-            path: 'invalid/base',
+          vi.mocked(useDesktopConfig().get).mockImplementation((key: string) => {
+            if (key === 'installState') return 'installed';
+            if (key === 'basePath') return 'invalid/base';
           });
         },
         expectedErrors: ['basePath'],
@@ -165,8 +172,13 @@ describe('InstallationManager', () => {
     ])('$scenario', async ({ mockSetup, expectedErrors }) => {
       const cleanup = mockSetup?.() as (() => void) | undefined;
 
-      const installation = new ComfyInstallation('installed', 'valid/base', createMockTelemetry());
-      vi.spyOn(ComfyInstallation, 'fromConfig').mockReturnValue(installation);
+      const installation = new ComfyInstallation(
+        'installed',
+        'valid/base',
+        createMockTelemetry(),
+        new ComfySettings('valid/base')
+      );
+      vi.spyOn(ComfyInstallation, 'fromConfig').mockResolvedValue(installation);
 
       vi.spyOn(
         manager as unknown as { resolveIssues: (installation: ComfyInstallation) => Promise<boolean> },

@@ -6,6 +6,7 @@ import { rm } from 'node:fs/promises';
 import os, { EOL } from 'node:os';
 import path from 'node:path';
 
+import { CUDA_TORCH_URL, NIGHTLY_CPU_TORCH_URL } from './constants';
 import type { TorchDeviceType } from './preload';
 import { HasTelemetry, ITelemetry, trackEvent } from './services/telemetry';
 import { getDefaultShell } from './shell/util';
@@ -16,47 +17,17 @@ export type ProcessCallbacks = {
   onStderr?: (data: string) => void;
 };
 
-export type PyTorchInstallConfig = {
+interface PipInstallConfig {
   packages: string[];
   indexUrl?: string;
   extraIndexUrl?: string;
   prerelease?: boolean;
   upgradePackages?: boolean;
-};
-
-export function getPyTorchConfig(selectedDevice: TorchDeviceType, platform: string): PyTorchInstallConfig {
-  const basePackages = ['torch', 'torchvision', 'torchaudio'];
-
-  // CPU-only configuration
-  if (selectedDevice === 'cpu') {
-    return {
-      packages: basePackages,
-    };
-  }
-
-  // NVIDIA/Windows configuration
-  if (selectedDevice === 'nvidia' || platform === 'win32') {
-    return {
-      packages: basePackages,
-      indexUrl: 'https://download.pytorch.org/whl/cu121',
-    };
-  }
-
-  // macOS/MPS configuration
-  if (selectedDevice === 'mps' || platform === 'darwin') {
-    return {
-      packages: basePackages,
-      extraIndexUrl: 'https://download.pytorch.org/whl/nightly/cpu',
-      prerelease: true,
-      upgradePackages: true,
-    };
-  }
-
-  // Default fallback configuration
-  return { packages: basePackages };
+  requirementsFile?: string;
+  indexStrategy?: 'compatible' | 'unsafe-best-match';
 }
 
-export function getPyTorchInstallArgs(config: PyTorchInstallConfig): string[] {
+export function getPipInstallArgs(config: PipInstallConfig): string[] {
   const installArgs = ['pip', 'install'];
 
   if (config.upgradePackages) {
@@ -64,10 +35,14 @@ export function getPyTorchInstallArgs(config: PyTorchInstallConfig): string[] {
   }
 
   if (config.prerelease) {
-    installArgs.push('--prerelease', 'allow');
+    installArgs.push('--pre');
   }
 
-  installArgs.push(...config.packages);
+  if (config.requirementsFile) {
+    installArgs.push('-r', config.requirementsFile);
+  } else {
+    installArgs.push(...config.packages);
+  }
 
   if (config.indexUrl) {
     installArgs.push('--index-url', config.indexUrl);
@@ -77,8 +52,28 @@ export function getPyTorchInstallArgs(config: PyTorchInstallConfig): string[] {
     installArgs.push('--extra-index-url', config.extraIndexUrl);
   }
 
+  if (config.indexStrategy) {
+    installArgs.push('--index-strategy', config.indexStrategy);
+  }
+
   return installArgs;
 }
+
+/**
+ * Returns the default torch mirror for the given device.
+ * @param device The device type
+ * @returns The default torch mirror
+ */
+const getDefaultTorchMirror = (device: TorchDeviceType): string => {
+  switch (device) {
+    case 'mps':
+      return NIGHTLY_CPU_TORCH_URL;
+    case 'nvidia':
+      return CUDA_TORCH_URL;
+    default:
+      return '';
+  }
+};
 
 /**
  * Manages a virtual Python environment using uv.
@@ -114,8 +109,7 @@ export class VirtualEnvironment implements HasTelemetry {
       VIRTUAL_ENV: this.venvPath,
       // Empty strings are not valid values for these env vars,
       // dropping them here to avoid passing them to uv.
-      UV_PYTHON_INSTALL_MIRROR: this.pythonMirror || undefined,
-      UV_PYPI_INSTALL_MIRROR: this.pypiMirror || undefined,
+      ...(this.pythonMirror ? { UV_PYTHON_INSTALL_MIRROR: this.pythonMirror } : {}),
     };
 
     if (!this.uvPty) {
@@ -297,7 +291,12 @@ export class VirtualEnvironment implements HasTelemetry {
       return this.manualInstall(callbacks);
     }
 
-    const installCmd = ['pip', 'install', '-r', this.requirementsCompiledPath, '--index-strategy', 'unsafe-best-match'];
+    const installCmd = getPipInstallArgs({
+      requirementsFile: this.requirementsCompiledPath,
+      indexStrategy: 'unsafe-best-match',
+      packages: [],
+      indexUrl: this.pypiMirror,
+    });
     const { exitCode } = await this.runUvCommandAsync(installCmd, callbacks);
     if (exitCode !== 0) {
       log.error(
@@ -456,11 +455,14 @@ export class VirtualEnvironment implements HasTelemetry {
   }
 
   async installPytorch(callbacks?: ProcessCallbacks): Promise<void> {
-    const config = getPyTorchConfig(this.selectedDevice, process.platform);
-    if (this.torchMirror) {
-      config.indexUrl = this.torchMirror;
-    }
-    const installArgs = getPyTorchInstallArgs(config);
+    const torchMirror = this.torchMirror || getDefaultTorchMirror(this.selectedDevice);
+    const config: PipInstallConfig = {
+      packages: ['torch', 'torchvision', 'torchaudio'],
+      indexUrl: torchMirror,
+      prerelease: torchMirror?.includes('nightly'),
+    };
+
+    const installArgs = getPipInstallArgs(config);
 
     log.info(`Installing PyTorch with config: ${JSON.stringify(config)}`);
     const { exitCode } = await this.runUvCommandAsync(installArgs, callbacks);
@@ -472,7 +474,11 @@ export class VirtualEnvironment implements HasTelemetry {
 
   private async installComfyUIRequirements(callbacks?: ProcessCallbacks): Promise<void> {
     log.info(`Installing ComfyUI requirements from ${this.comfyUIRequirementsPath}`);
-    const installCmd = ['pip', 'install', '-r', this.comfyUIRequirementsPath];
+    const installCmd = getPipInstallArgs({
+      requirementsFile: this.comfyUIRequirementsPath,
+      packages: [],
+      indexUrl: this.pypiMirror,
+    });
     const { exitCode } = await this.runUvCommandAsync(installCmd, callbacks);
     if (exitCode !== 0) {
       throw new Error(`Failed to install requirements.txt: exit code ${exitCode}`);
@@ -481,7 +487,11 @@ export class VirtualEnvironment implements HasTelemetry {
 
   private async installComfyUIManagerRequirements(callbacks?: ProcessCallbacks): Promise<void> {
     log.info(`Installing ComfyUIManager requirements from ${this.comfyUIManagerRequirementsPath}`);
-    const installCmd = ['pip', 'install', '-r', this.comfyUIManagerRequirementsPath];
+    const installCmd = getPipInstallArgs({
+      requirementsFile: this.comfyUIManagerRequirementsPath,
+      packages: [],
+      indexUrl: this.pypiMirror,
+    });
     const { exitCode } = await this.runUvCommandAsync(installCmd, callbacks);
     if (exitCode !== 0) {
       throw new Error(`Failed to install requirements.txt: exit code ${exitCode}`);
@@ -499,31 +509,32 @@ export class VirtualEnvironment implements HasTelemetry {
    * @returns `true` if pip install does not detect any missing packages, otherwise `false`
    */
   async hasRequirements() {
-    const args = ['pip', 'install', '--dry-run', '-r', this.comfyUIRequirementsPath];
-    log.info(`Running direct process command: ${args.join(' ')}`);
+    const checkRequirements = async (requirementsPath: string) => {
+      const args = ['pip', 'install', '--dry-run', '-r', requirementsPath];
+      log.info(`Running direct process command: ${args.join(' ')}`);
 
-    // Get packages as json string
-    let output = '';
-    const callbacks: ProcessCallbacks = {
-      onStdout: (data) => (output += data.toString()),
-      onStderr: (data) => (output += data.toString()),
+      // Get packages as json string
+      let output = '';
+      const callbacks: ProcessCallbacks = {
+        onStdout: (data) => (output += data.toString()),
+        onStderr: (data) => (output += data.toString()),
+      };
+      const result = await this.runCommandAsync(this.uvPath, args, { VIRTUAL_ENV: this.venvPath }, callbacks);
+
+      if (result.exitCode !== 0)
+        throw new Error(`Failed to get packages: Exit code ${result.exitCode}, signal ${result.signal}`);
+      if (!output) throw new Error('Failed to get packages: uv output was empty');
+
+      const venvOk = output.search(/\bWould make no changes\s+$/) !== -1;
+      if (!venvOk) log.warn(output);
+
+      return venvOk;
     };
-    const result = await this.runCommandAsync(
-      this.uvPath,
-      args,
-      { PYTHONIOENCODING: 'utf8' },
-      callbacks,
-      this.venvRootPath
-    );
 
-    if (result.exitCode !== 0)
-      throw new Error(`Failed to get packages: Exit code ${result.exitCode}, signal ${result.signal}`);
-    if (!output) throw new Error('Failed to get packages: uv output was empty');
+    const coreOk = await checkRequirements(this.comfyUIRequirementsPath);
+    const managerOk = await checkRequirements(this.comfyUIManagerRequirementsPath);
 
-    const venvOk = output.search(/\bWould make no changes\s+$/) !== -1;
-    if (!venvOk) log.warn(output);
-
-    return venvOk;
+    return coreOk && managerOk;
   }
 
   async clearUvCache(): Promise<boolean> {
@@ -579,7 +590,8 @@ export class VirtualEnvironment implements HasTelemetry {
     try {
       await this.#using(() => this.ensurePip(callbacks));
       return true;
-    } catch {
+    } catch (error) {
+      log.error('Failed to upgrade pip:', error);
       return false;
     }
   }
@@ -593,7 +605,8 @@ export class VirtualEnvironment implements HasTelemetry {
       const callbacks: ProcessCallbacks = { onStdout: onData };
       await this.#using(() => this.createVenvWithPython(callbacks));
       return true;
-    } catch {
+    } catch (error) {
+      log.error('Failed to create virtual environment:', error);
       return false;
     }
   }

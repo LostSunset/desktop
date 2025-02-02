@@ -16,6 +16,8 @@ import Store from 'electron-store';
 import path from 'node:path';
 import { URL } from 'node:url';
 
+import { ElectronError } from '@/infrastructure/electronError';
+
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
 import { getAppResourcesPath } from '../install/resourcePaths';
 import type { ElectronContextMenuOptions } from '../preload';
@@ -213,9 +215,23 @@ export class AppWindow {
       if (process.env.DEV_TOOLS_AUTO === 'true') this.window.webContents.openDevTools();
       await this.window.loadURL(url);
     } else {
+      // TODO: Remove this temporary workaround when RENDERER_READY is reworked.
+      if (page === 'maintenance') this.rendererReady = true;
+
       const appResourcesPath = getAppResourcesPath();
       const frontendPath = path.join(appResourcesPath, 'ComfyUI', 'web_custom_versions', 'desktop_app');
-      await this.window.loadFile(path.join(frontendPath, 'index.html'), { hash: page });
+      try {
+        await this.window.loadFile(path.join(frontendPath, 'index.html'), { hash: page });
+      } catch (error) {
+        const electronError = ElectronError.fromCaught(error);
+
+        // Ignore fallacious Chromium error
+        if (electronError?.isGenericChromiumError()) {
+          log.verbose('Ignoring Chromium page load error - occurs when requests are sent too fast.');
+          return;
+        }
+        throw electronError ?? error;
+      }
     }
   }
 
@@ -262,7 +278,6 @@ export class AppWindow {
   }
 
   private setupWindowEvents(): void {
-    // eslint-disable-next-line unicorn/consistent-function-scoping
     const updateBounds = () => {
       if (!this.window) return;
 

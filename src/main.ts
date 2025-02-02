@@ -1,3 +1,4 @@
+/* eslint-disable unicorn/prefer-top-level-await */
 import dotenv from 'dotenv';
 import { app, dialog, ipcMain, shell } from 'electron';
 import { LevelOption } from 'electron-log';
@@ -9,64 +10,49 @@ import { registerAppInfoHandlers } from './handlers/appInfoHandlers';
 import { registerNetworkHandlers } from './handlers/networkHandlers';
 import { registerPathHandlers } from './handlers/pathHandlers';
 import { InstallationManager } from './install/installationManager';
+import { AppState } from './main-process/appState';
 import { AppWindow } from './main-process/appWindow';
 import { ComfyDesktopApp } from './main-process/comfyDesktopApp';
+import { DevOverrides } from './main-process/devOverrides';
 import SentryLogging from './services/sentry';
 import { getTelemetry, promptMetricsConsent } from './services/telemetry';
 import { DesktopConfig } from './store/desktopConfig';
 import { findAvailablePort } from './utils';
 
+// Synchronous pre-start configuration
 dotenv.config();
-log.initialize();
-log.transports.file.level = (process.env.LOG_LEVEL as LevelOption) ?? 'info';
-log.info(`Starting app v${app.getVersion()}`);
-
-const allowDevVars = app.commandLine.hasSwitch('dev-mode');
+initalizeLogging();
 
 const telemetry = getTelemetry();
+const appState = new AppState();
+const overrides = new DevOverrides();
+
 // Register the quit handlers regardless of single instance lock and before squirrel startup events.
-// Quit when all windows are closed.
-app.on('window-all-closed', () => {
-  log.info('Quitting ComfyUI because window all closed');
-  app.quit();
-});
+quitWhenAllWindowsAreClosed();
+trackAppQuitEvents();
+initializeSentry();
 
-// Suppress unhandled exception dialog when already quitting.
-let quitting = false;
-app.on('before-quit', () => {
-  quitting = true;
-});
-
-app.on('quit', (event, exitCode) => {
-  telemetry.track('desktop:app_quit', {
-    reason: event,
-    exitCode,
-  });
-});
-
-// Sentry needs to be initialized at the top level.
-log.verbose('Initializing Sentry');
-SentryLogging.init();
-
-// Synchronous app start
+// Async config & app start
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   log.info('App already running. Exiting...');
   app.quit();
 } else {
-  app.on('ready', () => {
-    log.debug('App ready');
-    telemetry.registerHandlers();
-    telemetry.track('desktop:app_ready');
-    startApp().catch((error) => {
-      log.error('Unhandled exception in app startup', error);
-      app.exit(2020);
-    });
+  startApp().catch((error) => {
+    log.error('Unhandled exception in app startup', error);
+    app.exit(2020);
   });
 }
 
-// Async app start
+/** Wrapper for top-level await; the app is bundled to CommonJS. */
 async function startApp() {
+  // Wait for electron app ready event
+  await new Promise<void>((resolve) => app.once('ready', () => resolve()));
+  log.debug('App ready');
+
+  telemetry.registerHandlers();
+  telemetry.track('desktop:app_ready');
+
   // Load config or exit
   let store: DesktopConfig | undefined;
   try {
@@ -120,14 +106,14 @@ async function startApp() {
       if (allowMetrics) telemetry.flush();
 
       // Construct core launch args
-      const useExternalServer = devOverride('USE_EXTERNAL_SERVER') === 'true';
+      const useExternalServer = overrides.USE_EXTERNAL_SERVER === 'true';
       // Shallow-clone the setting launch args to avoid mutation.
       const extraServerArgs: Record<string, string> = Object.assign(
         {},
         comfyDesktopApp.comfySettings.get('Comfy.Server.LaunchArgs')
       );
-      const host = devOverride('COMFY_HOST') ?? extraServerArgs.listen ?? DEFAULT_SERVER_ARGS.host;
-      const targetPort = Number(devOverride('COMFY_PORT') ?? extraServerArgs.port ?? DEFAULT_SERVER_ARGS.port);
+      const host = overrides.COMFY_HOST ?? extraServerArgs.listen ?? DEFAULT_SERVER_ARGS.host;
+      const targetPort = Number(overrides.COMFY_PORT ?? extraServerArgs.port ?? DEFAULT_SERVER_ARGS.port);
       const port = useExternalServer ? targetPort : await findAvailablePort(host, targetPort, targetPort + 1000);
 
       // Remove listen and port from extraServerArgs so core launch args are used instead.
@@ -151,7 +137,7 @@ async function startApp() {
       log.error('Unhandled exception during app startup', error);
       appWindow.sendServerStartProgress(ProgressStatus.ERROR);
       appWindow.send(IPC_CHANNELS.LOG_MESSAGE, `${error}\n`);
-      if (!quitting) {
+      if (!appState.isQuitting) {
         dialog.showErrorBox(
           'Unhandled exception',
           `An unexpected error occurred whilst starting the app, and it needs to be closed.\n\nError message:\n\n${error}`
@@ -165,12 +151,33 @@ async function startApp() {
   }
 }
 
-/**
- * Always returns `undefined` in production, unless the `--dev-mode` command line argument is present.
- *
- * When running unpackaged or if the `--dev-mode` argument is present,
- * the requested environment variable is returned, otherwise `undefined`.
- */
-function devOverride(value: string) {
-  if (allowDevVars || !app.isPackaged) return process.env[value];
+/** Must be called prior to any logging. Sets default log level and logs app version. */
+function initalizeLogging() {
+  log.initialize();
+  log.transports.file.level = (process.env.LOG_LEVEL as LevelOption) ?? 'info';
+  log.info(`Starting app v${app.getVersion()}`);
+}
+
+/** Quit when all windows are closed.*/
+function quitWhenAllWindowsAreClosed() {
+  app.on('window-all-closed', () => {
+    log.info('Quitting ComfyUI because window all closed');
+    app.quit();
+  });
+}
+
+/** Add telemetry for the app quit event. */
+function trackAppQuitEvents() {
+  app.on('quit', (event, exitCode) => {
+    telemetry.track('desktop:app_quit', {
+      reason: event,
+      exitCode,
+    });
+  });
+}
+
+/** Sentry needs to be initialized at the top level. */
+function initializeSentry() {
+  log.verbose('Initializing Sentry');
+  SentryLogging.init();
 }

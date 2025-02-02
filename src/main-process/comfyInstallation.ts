@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises';
 import { ComfyServerConfig } from '../config/comfyServerConfig';
 import { ComfySettings } from '../config/comfySettings';
 import type { DesktopInstallState } from '../main_types';
-import type { InstallValidation, TorchDeviceType } from '../preload';
+import type { InstallValidation } from '../preload';
 import { type ITelemetry, getTelemetry } from '../services/telemetry';
 import { useDesktopConfig } from '../store/desktopConfig';
 import { canExecute, canExecuteShellCommand, pathAccessible } from '../utils';
@@ -15,6 +15,16 @@ import { VirtualEnvironment } from '../virtualEnvironment';
  * Used to set app state and validate the environment.
  */
 export class ComfyInstallation {
+  private _basePath: string;
+  public get basePath(): string {
+    return this._basePath;
+  }
+
+  private _virtualEnvironment: VirtualEnvironment;
+  public get virtualEnvironment(): VirtualEnvironment {
+    return this._virtualEnvironment;
+  }
+
   /** Installation issues, such as missing base path, no venv.  Populated by {@link validate}. */
   validation: InstallValidation = {
     inProgress: false,
@@ -30,20 +40,6 @@ export class ComfyInstallation {
     return this.state === 'installed' && !this.hasIssues;
   }
 
-  virtualEnvironment: VirtualEnvironment;
-  comfySettings: ComfySettings;
-
-  _basePath: string;
-  /** The base path of the desktop app.  Models, nodes, and configuration are saved here by default. */
-  get basePath() {
-    return this._basePath;
-  }
-  set basePath(value: string) {
-    // Duplicated in constructor to avoid non-nullable type assertions.
-    this._basePath = value;
-    this.virtualEnvironment = this.createVirtualEnvironment(value);
-  }
-
   /**
    * Called during/after each step of validation
    * @param data The data to send to the renderer
@@ -57,21 +53,19 @@ export class ComfyInstallation {
     basePath: string,
     /** The device type to use for the installation. */
     public readonly telemetry: ITelemetry,
-    public device?: TorchDeviceType
+    public comfySettings: ComfySettings
   ) {
-    // TypeScript workaround: duplication of basePath setter
     this._basePath = basePath;
-    this.comfySettings = new ComfySettings(basePath);
-    this.virtualEnvironment = this.createVirtualEnvironment(basePath);
+    this._virtualEnvironment = this.createVirtualEnvironment(basePath);
   }
 
   private createVirtualEnvironment(basePath: string) {
     return new VirtualEnvironment(basePath, {
       telemetry: this.telemetry,
-      selectedDevice: this.device,
-      pythonMirror: this.comfySettings.get('Comfy-Desktop.PythonInstallMirror'),
-      pypiMirror: this.comfySettings.get('Comfy-Desktop.PypiInstallMirror'),
-      torchMirror: this.comfySettings.get('Comfy-Desktop.TorchInstallMirror'),
+      selectedDevice: useDesktopConfig().get('selectedDevice'),
+      pythonMirror: this.comfySettings.get('Comfy-Desktop.UV.PythonInstallMirror'),
+      pypiMirror: this.comfySettings.get('Comfy-Desktop.UV.PypiInstallMirror'),
+      torchMirror: this.comfySettings.get('Comfy-Desktop.UV.TorchInstallMirror'),
     });
   }
 
@@ -80,12 +74,15 @@ export class ComfyInstallation {
    * @returns A ComfyInstallation (not validated) object if config is saved, otherwise `undefined`.
    * @throws If YAML config is unreadable due to access restrictions
    */
-  static fromConfig(): ComfyInstallation | undefined {
+  static async fromConfig(): Promise<ComfyInstallation | undefined> {
     const config = useDesktopConfig();
     const state = config.get('installState');
     const basePath = config.get('basePath');
-    const device = config.get('selectedDevice');
-    if (state && basePath) return new ComfyInstallation(state, basePath, getTelemetry(), device);
+    if (state && basePath) {
+      const comfySettings = new ComfySettings(basePath);
+      await comfySettings.loadSettings();
+      return new ComfyInstallation(state, basePath, getTelemetry(), comfySettings);
+    }
   }
 
   /**
@@ -111,12 +108,14 @@ export class ComfyInstallation {
     }
 
     // Validate base path
-    const basePath = await this.loadBasePath();
+    const basePath = useDesktopConfig().get('basePath');
     if (basePath && (await pathAccessible(basePath))) {
+      await this.updateBasePathAndVenv(basePath);
+
       validation.basePath = 'OK';
       this.onUpdate?.(validation);
 
-      const venv = this.createVirtualEnvironment(basePath);
+      const venv = this.virtualEnvironment;
       if (await venv.exists()) {
         validation.venvDirectory = 'OK';
         this.onUpdate?.(validation);
@@ -176,35 +175,6 @@ export class ComfyInstallation {
   }
 
   /**
-   * Loads the base path from YAML config. If it is unreadable, warns the user and quits.
-   * @returns The base path if read successfully, or `undefined`
-   * @throws If the config file is present but not readable
-   */
-  async loadBasePath(): Promise<string | undefined> {
-    const readResult = await ComfyServerConfig.readBasePathFromConfig(ComfyServerConfig.configPath);
-    switch (readResult.status) {
-      case 'success':
-        // TODO: Check if config.json basePath different, then determine why it has changed (intentional?)
-        this.basePath = readResult.path;
-        return readResult.path;
-      case 'invalid':
-        // TODO: File was there, and was valid YAML.  It just didn't have a valid base_path.
-        // Show path edit screen instead of reinstall.
-        return;
-      case 'notFound':
-        return;
-      default:
-        // 'error': Explain and quit
-        // TODO: Support link?  Something?
-        throw new Error(`Unable to read the YAML configuration file.  Please ensure this file is available and can be read:
-
-${ComfyServerConfig.configPath}
-
-If this problem persists, back up and delete the config file, then restart the app.`);
-    }
-  }
-
-  /**
    * Migrates the config file to the latest format, after an upgrade of the desktop app executables.
    *
    * Called during app startup, this function ensures that config is in the expected state.
@@ -227,6 +197,20 @@ If this problem persists, back up and delete the config file, then restart the a
   setState(state: DesktopInstallState) {
     this.state = state;
     useDesktopConfig().set('installState', state);
+  }
+
+  /**
+   * Updates the base path and recreates the virtual environment (object).
+   * @param basePath The new base path to set.
+   */
+  async updateBasePathAndVenv(basePath: string) {
+    if (this._basePath === basePath) return;
+
+    this._basePath = basePath;
+    this._virtualEnvironment = this.createVirtualEnvironment(basePath);
+    this.comfySettings = new ComfySettings(basePath);
+    await this.comfySettings.loadSettings();
+    useDesktopConfig().set('basePath', basePath);
   }
 
   /**
