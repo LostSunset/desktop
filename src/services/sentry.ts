@@ -1,8 +1,9 @@
 import * as Sentry from '@sentry/electron/main';
 import { app, dialog } from 'electron';
+import log from 'electron-log/main';
+import { graphics } from 'systeminformation';
 
 import { SENTRY_URL_ENDPOINT } from '../constants';
-import { ComfyDesktopApp } from '../main-process/comfyDesktopApp';
 import { getTelemetry } from './telemetry';
 
 const createSentryUrl = (eventId: string) => `https://comfy-org.sentry.io/projects/4508007940685824/events/${eventId}/`;
@@ -20,7 +21,10 @@ const queueMixPanelEvents = (event: Sentry.Event) => {
 };
 
 class SentryLogging {
-  comfyDesktopApp: ComfyDesktopApp | undefined;
+  /** Used to redact the base path in the event payload. */
+  getBasePath?: () => string | undefined;
+  /** If `true`, the event will be sent to Mixpanel. */
+  shouldSendStatistics?: () => boolean;
 
   init() {
     Sentry.init({
@@ -31,7 +35,7 @@ class SentryLogging {
       beforeSend: async (event) => {
         this.filterEvent(event);
 
-        if (this.comfyDesktopApp?.comfySettings.get('Comfy-Desktop.SendStatistics')) {
+        if (this.shouldSendStatistics?.()) {
           queueMixPanelEvents(event);
           return event;
         }
@@ -60,11 +64,34 @@ class SentryLogging {
     });
   }
 
+  async setSentryGpuContext(): Promise<void> {
+    log.debug('Setting up GPU context');
+    try {
+      const graphicsInfo = await graphics();
+      const gpuInfo = graphicsInfo.controllers.map((gpu, index) => ({
+        [`gpu_${index}`]: {
+          vendor: gpu.vendor,
+          model: gpu.model,
+          vram: gpu.vram,
+          driver: gpu.driverVersion,
+        },
+      }));
+
+      // Combine all GPU info into a single object
+      const allGpuInfo = { ...gpuInfo };
+      // Set Sentry context with all GPU information
+      Sentry.setContext('gpus', allGpuInfo);
+    } catch (error) {
+      log.error('Error getting GPU info:', error);
+    }
+  }
+
   private filterEvent(obj: unknown) {
-    if (!obj || !this.comfyDesktopApp?.basePath) return obj;
+    const basePath = this.getBasePath?.();
+    if (!obj || !basePath) return obj;
 
     if (typeof obj === 'string') {
-      return obj.replaceAll(this.comfyDesktopApp.basePath, '[basePath]');
+      return obj.replaceAll(basePath, '[basePath]');
     }
 
     try {

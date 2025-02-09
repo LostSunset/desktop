@@ -100,6 +100,7 @@ export interface InstallValidation {
   uv?: ValidationIssueState;
   git?: ValidationIssueState;
   vcRedist?: ValidationIssueState;
+  managerPythonPackages?: ValidationIssueState;
 }
 
 const electronAPI = {
@@ -129,18 +130,15 @@ const electronAPI = {
   isPackaged: (): Promise<boolean> => {
     return ipcRenderer.invoke(IPC_CHANNELS.IS_PACKAGED);
   },
-  restartApp: (customMessage?: string, delay?: number): void => {
+  restartApp: async (customMessage?: string, delay?: number): Promise<void> => {
     console.log('Sending restarting app message to main process with custom message:', customMessage);
-    ipcRenderer.send(IPC_CHANNELS.RESTART_APP, { customMessage, delay });
+    await ipcRenderer.invoke(IPC_CHANNELS.RESTART_APP, { customMessage, delay });
   },
   /** Exits the application gracefully. */
   quit: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.QUIT),
   /** @todo Move to {@link electronAPI.Validation} */
   reinstall: (): Promise<void> => {
     return ipcRenderer.invoke(IPC_CHANNELS.REINSTALL);
-  },
-  openDialog: (options: Electron.OpenDialogOptions) => {
-    return ipcRenderer.invoke(IPC_CHANNELS.OPEN_DIALOG, options);
   },
   /**
    * Various paths that are useful to the renderer.
@@ -331,7 +329,7 @@ const electronAPI = {
   /** Restart the python server without restarting desktop. */
   restartCore: async (): Promise<void> => {
     console.log('Restarting core process');
-    await ipcRenderer.invoke(IPC_CHANNELS.RESTART_APP);
+    await ipcRenderer.invoke(IPC_CHANNELS.RESTART_CORE);
   },
   /** Gets the platform reported by node.js */
   getPlatform: () => process.platform,

@@ -5,6 +5,8 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import yaml, { type YAMLParseError } from 'yaml';
 
+import { getAppResourcesPath } from '@/install/resourcePaths';
+
 const knownModelKeys = [
   'checkpoints',
   'classifiers',
@@ -76,7 +78,6 @@ export class ComfyServerConfig {
   static readonly EXTRA_MODEL_CONFIG_PATH = 'extra_models_config.yaml';
 
   private static readonly commonPaths = {
-    ...this.getBaseModelPathsFromRepoPath(''),
     custom_nodes: 'custom_nodes/',
     download_model_base: 'models',
   };
@@ -238,5 +239,25 @@ export class ComfyServerConfig {
     const stringified = ComfyServerConfig.generateConfigFileContent(parsedConfig);
 
     return await ComfyServerConfig.writeConfigFile(ComfyServerConfig.configPath, stringified);
+  }
+
+  /**
+   * Patches extra_model_config.yaml to include the custom nodes bundled with the app (eg. ComfyUI-Manager).
+   * @returns
+   */
+  public static async addAppBundledCustomNodesToConfig(): Promise<void> {
+    const parsedConfig = await ComfyServerConfig.readConfigFile(ComfyServerConfig.configPath);
+    if (parsedConfig === null) {
+      log.error('Failed to read config file');
+      return;
+    }
+
+    if (!parsedConfig.desktop_extensions) {
+      const customNodesPath = path.join(getAppResourcesPath(), 'ComfyUI', 'custom_nodes');
+      log.info(`Adding custom node extra_path to config ${customNodesPath}`);
+      parsedConfig.desktop_extensions = { custom_nodes: customNodesPath };
+      const stringified = ComfyServerConfig.generateConfigFileContent(parsedConfig);
+      await ComfyServerConfig.writeConfigFile(ComfyServerConfig.configPath, stringified);
+    }
   }
 }

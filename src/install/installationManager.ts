@@ -1,4 +1,4 @@
-import { Notification, app, dialog, ipcMain } from 'electron';
+import { Notification, app, dialog, ipcMain, shell } from 'electron';
 import log from 'electron-log/main';
 
 import { ComfySettings } from '@/config/comfySettings';
@@ -8,17 +8,17 @@ import type { AppWindow } from '../main-process/appWindow';
 import { ComfyInstallation } from '../main-process/comfyInstallation';
 import type { InstallOptions } from '../preload';
 import { CmCli } from '../services/cmCli';
-import { ITelemetry } from '../services/telemetry';
+import { type HasTelemetry, ITelemetry, trackEvent } from '../services/telemetry';
 import { type DesktopConfig, useDesktopConfig } from '../store/desktopConfig';
-import { ansiCodes, validateHardware } from '../utils';
+import { ansiCodes, canExecuteShellCommand, validateHardware } from '../utils';
 import type { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
 import { InstallWizard } from './installWizard';
 
 /** High-level / UI control over the installation of ComfyUI server. */
-export class InstallationManager {
+export class InstallationManager implements HasTelemetry {
   constructor(
-    public readonly appWindow: AppWindow,
-    private readonly telemetry: ITelemetry
+    readonly appWindow: AppWindow,
+    readonly telemetry: ITelemetry
   ) {}
 
   /**
@@ -39,6 +39,10 @@ export class InstallationManager {
     if (installation.state === 'started') return await this.resumeInstallation();
 
     // Validate the installation
+    return await this.validateInstallation(installation);
+  }
+
+  private async validateInstallation(installation: ComfyInstallation) {
     try {
       // Send updates to renderer
       this.#setupIpc(installation);
@@ -48,6 +52,9 @@ export class InstallationManager {
 
       // Convert from old format
       if (state === 'upgraded') installation.upgradeConfig();
+
+      // Install updated manager requirements
+      await this.updateManagerPackages(installation);
 
       // Resolve issues and re-run validation
       if (installation.hasIssues) {
@@ -107,12 +114,20 @@ export class InstallationManager {
       installation.onUpdate?.(installation.validation);
       return installation.validation;
     });
-    ipcMain.handle(IPC_CHANNELS.VALIDATE_INSTALLATION, async () => await installation.validate());
-    ipcMain.handle(IPC_CHANNELS.UV_INSTALL_REQUIREMENTS, () =>
-      installation.virtualEnvironment.reinstallRequirements(sendLogIpc)
-    );
-    ipcMain.handle(IPC_CHANNELS.UV_CLEAR_CACHE, async () => await installation.virtualEnvironment.clearUvCache());
+    ipcMain.handle(IPC_CHANNELS.VALIDATE_INSTALLATION, async () => {
+      this.telemetry.track('installation_manager:installation_validate');
+      return await installation.validate();
+    });
+    ipcMain.handle(IPC_CHANNELS.UV_INSTALL_REQUIREMENTS, () => {
+      this.telemetry.track('installation_manager:uv_requirements_install');
+      return installation.virtualEnvironment.reinstallRequirements(sendLogIpc);
+    });
+    ipcMain.handle(IPC_CHANNELS.UV_CLEAR_CACHE, async () => {
+      this.telemetry.track('installation_manager:uv_cache_clear');
+      return await installation.virtualEnvironment.clearUvCache();
+    });
     ipcMain.handle(IPC_CHANNELS.UV_RESET_VENV, async (): Promise<boolean> => {
+      this.telemetry.track('installation_manager:uv_venv_reset');
       const venv = installation.virtualEnvironment;
       const deleted = await venv.removeVenvDirectory();
       if (!deleted) return false;
@@ -124,11 +139,7 @@ export class InstallationManager {
     });
 
     // Replace the reinstall IPC handler.
-    ipcMain.removeHandler(IPC_CHANNELS.REINSTALL);
-    ipcMain.handle(IPC_CHANNELS.REINSTALL, async () => {
-      log.info('Reinstalling...');
-      await InstallationManager.reinstall(installation);
-    });
+    InstallationManager.setReinstallHandler(installation);
   }
 
   /**
@@ -171,6 +182,26 @@ export class InstallationManager {
       await this.appWindow.loadPage('welcome');
     }
 
+    // Check if git is installed
+    log.verbose('Checking if git is installed.');
+    const gitInstalled = await canExecuteShellCommand('git --version');
+    if (!gitInstalled) {
+      log.verbose('git not detected in path, loading download-git page.');
+
+      const { response } = await this.appWindow.showMessageBox({
+        type: 'info',
+        title: 'Download git',
+        message: `We were unable to find git on this device.\n\nPlease download and install git before continuing with the installation of ComfyUI Desktop.`,
+        buttons: ['Open git downloads page', 'Skip'],
+        defaultId: 0,
+        cancelId: 1,
+      });
+
+      if (response === 0) {
+        await shell.openExternal('https://git-scm.com/downloads/');
+      }
+    }
+
     // Handover to frontend
     const installOptions = await optionsPromise;
     this.telemetry.track('desktop:install_options_received', {
@@ -178,6 +209,10 @@ export class InstallationManager {
       autoUpdate: installOptions.autoUpdate,
       allowMetrics: installOptions.allowMetrics,
       migrationItemIds: installOptions.migrationItemIds,
+      pythonMirror: installOptions.pythonMirror,
+      pypiMirror: installOptions.pypiMirror,
+      torchMirror: installOptions.torchMirror,
+      device: installOptions.device,
     });
 
     // Save desktop config
@@ -206,6 +241,7 @@ export class InstallationManager {
     const comfySettings = new ComfySettings(installWizard.basePath);
     await comfySettings.loadSettings();
     const installation = new ComfyInstallation('started', installWizard.basePath, this.telemetry, comfySettings);
+    InstallationManager.setReinstallHandler(installation);
     const { virtualEnvironment } = installation;
 
     // Virtual terminal output callbacks
@@ -258,20 +294,6 @@ export class InstallationManager {
   }
 
   /**
-   * Shows a dialog box to select a base path to install ComfyUI.
-   * @param initialPath The initial path to show in the dialog box.
-   * @returns The selected path, otherwise `undefined`.
-   */
-  async showBasePathPicker(initialPath?: string): Promise<string | undefined> {
-    const defaultPath = initialPath ?? app.getPath('documents');
-    const { filePaths } = await this.appWindow.showOpenDialog({
-      defaultPath,
-      properties: ['openDirectory', 'treatPackageAsDirectory', 'dontAddToRecent'],
-    });
-    return filePaths[0];
-  }
-
-  /**
    * Resolves any issues found during installation validation.
    * @param installation The installation to resolve issues for
    * @throws If the base path is invalid or cannot be saved
@@ -297,7 +319,29 @@ export class InstallationManager {
     return isValid;
   }
 
-  static async reinstall(installation: ComfyInstallation): Promise<void> {
+  @trackEvent('installation_manager:manager_packages_update')
+  private async updateManagerPackages(installation: ComfyInstallation) {
+    if (installation.validation.managerPythonPackages !== 'warning') return;
+
+    const sendLogIpc = (data: string) => {
+      log.info(data);
+      this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
+    };
+    await this.appWindow.loadPage('desktop-update');
+    await installation.virtualEnvironment.installComfyUIManagerRequirements({
+      onStdout: sendLogIpc,
+      onStderr: sendLogIpc,
+    });
+    await installation.validate();
+  }
+
+  static setReinstallHandler(installation: ComfyInstallation) {
+    ipcMain.removeHandler(IPC_CHANNELS.REINSTALL);
+    ipcMain.handle(IPC_CHANNELS.REINSTALL, async () => await InstallationManager.reinstall(installation));
+  }
+
+  private static async reinstall(installation: ComfyInstallation): Promise<void> {
+    log.info('Reinstalling...');
     await installation.uninstall();
     app.relaunch();
     app.quit();

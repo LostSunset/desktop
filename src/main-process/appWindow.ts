@@ -17,15 +17,15 @@ import path from 'node:path';
 import { URL } from 'node:url';
 
 import { ElectronError } from '@/infrastructure/electronError';
+import type { Page } from '@/infrastructure/interfaces';
+import type { IAppState } from '@/main-process/appState';
+import { clamp } from '@/utils';
 
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
 import { getAppResourcesPath } from '../install/resourcePaths';
 import type { ElectronContextMenuOptions } from '../preload';
 import { AppWindowSettings } from '../store/AppWindowSettings';
 import { useDesktopConfig } from '../store/desktopConfig';
-
-/** A frontend page that can be loaded by the app. Must be a valid entry in the frontend router. @see {@link AppWindow.isOnPage} */
-type Page = 'desktop-start' | 'welcome' | 'not-supported' | 'metrics-consent' | 'server-start' | '' | 'maintenance';
 
 /**
  * Creates a single application window that displays the renderer and encapsulates all the logic for sending messages to the renderer.
@@ -54,18 +54,31 @@ export class AppWindow {
     if (!app.isPackaged) return process.env.DEV_SERVER_URL;
   }
 
-  public constructor() {
+  public constructor(private readonly appState: IAppState) {
     const installed = useDesktopConfig().get('installState') === 'installed';
-    const primaryDisplay = screen.getPrimaryDisplay();
-    const { width, height } = installed ? primaryDisplay.workAreaSize : { width: 1024, height: 768 };
+    const { workAreaSize } = screen.getPrimaryDisplay();
+    const { width, height } = installed ? workAreaSize : { width: 1024, height: 768 };
     const store = this.loadWindowStore();
     this.store = store;
+
+    const minWidth = 640;
+    const minHeight = 640;
 
     // Retrieve stored window size, or use default if not available
     const storedWidth = store.get('windowWidth', width);
     const storedHeight = store.get('windowHeight', height);
     const storedX = store.get('windowX');
     const storedY = store.get('windowY');
+
+    // Clamp stored window size to primary display size
+    const clampedWidth = clamp(storedWidth, minWidth, workAreaSize.width);
+    const clampedHeight = clamp(storedHeight, minHeight, workAreaSize.height);
+
+    // Use window manager default behaviour if settings are invalid
+    const eitherUndefined = storedX === undefined || storedY === undefined;
+    // Ensure window is wholly contained within the primary display
+    const x = eitherUndefined ? undefined : clamp(storedX, 0, workAreaSize.width - clampedWidth);
+    const y = eitherUndefined ? undefined : clamp(storedY, 0, workAreaSize.height - clampedHeight);
 
     // macOS requires different handling to linux / win32
     const customChrome: Electron.BrowserWindowConstructorOptions = this.customWindowEnabled
@@ -77,12 +90,12 @@ export class AppWindow {
 
     this.window = new BrowserWindow({
       title: 'ComfyUI',
-      width: storedWidth,
-      height: storedHeight,
+      width: clampedWidth,
+      height: clampedHeight,
       minWidth: 640,
       minHeight: 640,
-      x: storedX,
-      y: storedY,
+      x,
+      y,
       webPreferences: {
         // eslint-disable-next-line unicorn/prefer-module
         preload: path.join(__dirname, '../build/preload.cjs'),
@@ -102,6 +115,7 @@ export class AppWindow {
 
     this.setupWindowEvents();
     this.setupAppEvents();
+    this.setupIpcEvents();
     this.sendQueuedEventsOnReady();
     this.setupTray();
     this.menu = this.buildMenu();
@@ -135,19 +149,11 @@ export class AppWindow {
    * @param status - The status of the server start progress.
    */
   sendServerStartProgress(status: ProgressStatus): void {
-    this.send(IPC_CHANNELS.LOADING_PROGRESS, {
-      status,
-    });
-  }
-
-  public onClose(callback: () => void): void {
-    this.window.on('close', () => {
-      callback();
-    });
+    this.send(IPC_CHANNELS.LOADING_PROGRESS, { status });
   }
 
   public async loadComfyUI(serverArgs: ServerArgs) {
-    const host = serverArgs.host === '0.0.0.0' ? 'localhost' : serverArgs.host;
+    const host = serverArgs.listen === '0.0.0.0' ? 'localhost' : serverArgs.listen;
     const url = this.devUrlOverride ?? `http://${host}:${serverArgs.port}`;
     await this.window.loadURL(url);
   }
@@ -201,6 +207,8 @@ export class AppWindow {
    * @param page The page to load; a valid entry in the frontend router.
    */
   public async loadPage(page: Page): Promise<void> {
+    this.appState.currentPage = page;
+
     const { devUrlOverride } = this;
     if (devUrlOverride) {
       const url = `${devUrlOverride}/${page}`;
@@ -295,6 +303,7 @@ export class AppWindow {
 
     this.window.on('resize', updateBounds);
     this.window.on('move', updateBounds);
+    this.window.on('close', () => log.info('App window closed.'));
 
     this.window.webContents.setWindowOpenHandler(({ url }) => {
       // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -310,6 +319,18 @@ export class AppWindow {
 
       if (this.isMinimized()) this.restore();
       this.focus();
+    });
+  }
+
+  private setupIpcEvents() {
+    ipcMain.on(IPC_CHANNELS.CHANGE_THEME, (_event, options: TitleBarOverlayOptions) => {
+      this.changeTheme(options);
+    });
+    ipcMain.on(IPC_CHANNELS.SHOW_CONTEXT_MENU, (_event, options?: ElectronContextMenuOptions) => {
+      this.showSystemContextMenu(options);
+    });
+    ipcMain.on(IPC_CHANNELS.OPEN_DEV_TOOLS, () => {
+      this.openDevTools();
     });
   }
 

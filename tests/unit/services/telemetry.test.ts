@@ -83,7 +83,7 @@ describe('MixpanelTelemetry', () => {
       expect(telemetry['queue'][0].properties).toMatchObject({
         ...properties,
         distinct_id: expect.any(String),
-        time: expect.any(Date),
+        time: expect.any(Number),
       });
     });
 
@@ -93,7 +93,7 @@ describe('MixpanelTelemetry', () => {
       telemetry.track(eventName);
 
       // Simulate receiving consent
-      const installOptionsHandler = vi.mocked(ipcMain.once).mock.calls[0][1];
+      const installOptionsHandler = vi.mocked(ipcMain.on).mock.calls[0][1];
       const mockIpcEvent = {} as IpcMainEvent;
       installOptionsHandler(mockIpcEvent, { allowMetrics: true });
 
@@ -109,7 +109,7 @@ describe('MixpanelTelemetry', () => {
     it('should handle INSTALL_COMFYUI event and update consent', () => {
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
       const mockIpcEvent = {} as IpcMainEvent;
-      const installOptionsHandler = vi.mocked(ipcMain.once).mock.calls[0][1];
+      const installOptionsHandler = vi.mocked(ipcMain.on).mock.calls[0][1];
       installOptionsHandler(mockIpcEvent, { allowMetrics: true });
       expect(telemetry.hasConsent).toBe(true);
     });
@@ -121,17 +121,30 @@ describe('MixpanelTelemetry', () => {
       expect(ipcMain.on).toHaveBeenCalledWith(IPC_CHANNELS.TRACK_EVENT, expect.any(Function));
     });
 
-    it('should handle TRACK_EVENT messages', () => {
+    it('should handle TRACK_EVENT directly', () => {
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
+      // Register the handlers first
       telemetry.registerHandlers();
-      const trackEventHandler = vi.mocked(ipcMain.on).mock.calls[0][1];
 
-      // Simulate receiving a track event
+      // Get the TRACK_EVENT handler directly
+      const [, trackEventHandler] = (ipcMain.on as any).mock.calls.find(
+        ([channel]: any) => channel === IPC_CHANNELS.TRACK_EVENT
+      );
+
+      // Simulate the TRACK_EVENT
       const mockIpcEvent = {} as IpcMainEvent;
       trackEventHandler(mockIpcEvent, 'test_event', { foo: 'bar' });
 
-      // Since consent is false by default, it should be queued
+      // Verify the event was queued (since consent is false by default)
       expect(telemetry['queue'].length).toBe(1);
+      expect(telemetry['queue'][0]).toMatchObject({
+        eventName: 'test_event',
+        properties: expect.objectContaining({
+          foo: 'bar',
+          distinct_id: expect.any(String),
+          time: expect.any(Number),
+        }),
+      });
     });
 
     it('should register ipc handler for INCREMENT_USER_PROPERTY', () => {
@@ -184,7 +197,7 @@ describe('MixpanelTelemetry', () => {
 describe('promptMetricsConsent', () => {
   let store: Pick<DesktopConfig, 'get' | 'set'>;
   let appWindow: Pick<AppWindow, 'loadPage'>;
-  let comfyDesktopApp: { comfySettings: Pick<ComfySettings, 'get' | 'set' | 'saveSettings'> };
+  let comfySettings: Pick<ComfySettings, 'get' | 'set' | 'saveSettings'>;
 
   const versionBeforeUpdate = '0.4.1';
   const versionAfterUpdate = '1.0.1';
@@ -193,7 +206,7 @@ describe('promptMetricsConsent', () => {
     vi.clearAllMocks();
     store = { get: vi.fn(), set: vi.fn() };
     appWindow = { loadPage: vi.fn() };
-    comfyDesktopApp = { comfySettings: { get: vi.fn(), set: vi.fn(), saveSettings: vi.fn() } };
+    comfySettings = { get: vi.fn(), set: vi.fn(), saveSettings: vi.fn() };
   });
 
   const runTest = async ({
@@ -210,7 +223,7 @@ describe('promptMetricsConsent', () => {
     promptUser?: boolean;
   }) => {
     vi.mocked(store.get).mockReturnValue(storeValue);
-    vi.mocked(comfyDesktopApp.comfySettings.get).mockReturnValue(settingsValue);
+    vi.mocked(comfySettings.get).mockReturnValue(settingsValue);
 
     if (promptUser) {
       vi.mocked(ipcMain.handleOnce).mockImplementationOnce((channel, handler) => {
@@ -221,7 +234,7 @@ describe('promptMetricsConsent', () => {
     }
 
     // @ts-expect-error - store is a mock and doesn't implement all of DesktopConfig
-    const result = await promptMetricsConsent(store, appWindow, comfyDesktopApp);
+    const result = await promptMetricsConsent(store, appWindow, comfySettings);
     expect(result).toBe(expectedResult);
 
     if (promptUser) ipcMain.removeHandler(IPC_CHANNELS.SET_METRICS_CONSENT);

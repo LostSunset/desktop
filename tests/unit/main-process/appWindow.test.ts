@@ -23,6 +23,7 @@ vi.mock('electron', () => ({
   },
   Tray: vi.fn(() => ({
     setContextMenu: vi.fn(),
+    setPressedImage: vi.fn(),
     setToolTip: vi.fn(),
     on: vi.fn(),
   })),
@@ -75,7 +76,7 @@ describe('AppWindow.isOnPage', () => {
         }) as unknown as BrowserWindow
     );
 
-    appWindow = new AppWindow();
+    appWindow = new AppWindow(null!);
   });
 
   it('should handle file protocol URLs with hash correctly', () => {

@@ -6,10 +6,10 @@ import { rm } from 'node:fs/promises';
 import os, { EOL } from 'node:os';
 import path from 'node:path';
 
-import { CUDA_TORCH_URL, NIGHTLY_CPU_TORCH_URL } from './constants';
+import { CUDA_TORCH_URL, DEFAULT_PYPI_INDEX_URL, NIGHTLY_CPU_TORCH_URL } from './constants';
 import type { TorchDeviceType } from './preload';
 import { HasTelemetry, ITelemetry, trackEvent } from './services/telemetry';
-import { getDefaultShell } from './shell/util';
+import { getDefaultShell, getDefaultShellArgs } from './shell/util';
 import { pathAccessible } from './utils';
 
 export type ProcessCallbacks = {
@@ -64,16 +64,26 @@ export function getPipInstallArgs(config: PipInstallConfig): string[] {
  * @param device The device type
  * @returns The default torch mirror
  */
-const getDefaultTorchMirror = (device: TorchDeviceType): string => {
+function getDefaultTorchMirror(device: TorchDeviceType): string {
+  log.debug('Falling back to default torch mirror');
   switch (device) {
     case 'mps':
       return NIGHTLY_CPU_TORCH_URL;
     case 'nvidia':
       return CUDA_TORCH_URL;
     default:
-      return '';
+      return DEFAULT_PYPI_INDEX_URL;
   }
-};
+}
+
+/** Disallows using the default mirror (CPU torch) when the selected device is not CPU. */
+function fixDeviceMirrorMismatch(device: TorchDeviceType, mirror: string | undefined) {
+  if (mirror === DEFAULT_PYPI_INDEX_URL) {
+    if (device === 'nvidia') return CUDA_TORCH_URL;
+    else if (device === 'mps') return NIGHTLY_CPU_TORCH_URL;
+  }
+  return mirror;
+}
 
 /**
  * Manages a virtual Python environment using uv.
@@ -102,10 +112,6 @@ export class VirtualEnvironment implements HasTelemetry {
   get uvPtyInstance() {
     const env = {
       ...(process.env as Record<string, string>),
-      UV_CACHE_DIR: this.cacheDir,
-      UV_TOOL_DIR: this.cacheDir,
-      UV_TOOL_BIN_DIR: this.cacheDir,
-      UV_PYTHON_INSTALL_DIR: this.cacheDir,
       VIRTUAL_ENV: this.venvPath,
       // Empty strings are not valid values for these env vars,
       // dropping them here to avoid passing them to uv.
@@ -114,7 +120,7 @@ export class VirtualEnvironment implements HasTelemetry {
 
     if (!this.uvPty) {
       const shell = getDefaultShell();
-      this.uvPty = pty.spawn(shell, [], {
+      this.uvPty = pty.spawn(shell, getDefaultShellArgs(), {
         handleFlowControl: false,
         conptyInheritCursor: false,
         name: 'xterm',
@@ -149,7 +155,7 @@ export class VirtualEnvironment implements HasTelemetry {
     this.selectedDevice = selectedDevice ?? 'cpu';
     this.pythonMirror = pythonMirror;
     this.pypiMirror = pypiMirror;
-    this.torchMirror = torchMirror;
+    this.torchMirror = fixDeviceMirrorMismatch(selectedDevice!, torchMirror);
 
     // uv defaults to .venv
     this.venvPath = path.join(venvPath, '.venv');
@@ -362,36 +368,41 @@ export class VirtualEnvironment implements HasTelemetry {
   }
 
   private async runPtyCommandAsync(command: string, onData?: (data: string) => void): Promise<{ exitCode: number }> {
+    function hasExited(data: string, endMarker: string): string | undefined {
+      // Remove ansi sequences to see if this the exit marker
+      const lines = data.replaceAll(/\u001B\[[\d;?]*[A-Za-z]/g, '').split(/(\r\n|\n)/);
+      for (const line of lines) {
+        if (line.startsWith(endMarker)) {
+          return line.substring(endMarker.length).trim();
+        }
+      }
+    }
+
+    function parseExitCode(exit: string): number {
+      // Powershell outputs True / False for success
+      if (exit === 'True') return 0;
+      if (exit === 'False') return -999;
+      // Bash should output a number
+      const exitCode = Number.parseInt(exit);
+      if (Number.isNaN(exitCode)) {
+        console.warn('Unable to parse exit code:', exit);
+        return -998;
+      }
+      return exitCode;
+    }
+
     const id = Date.now();
     return new Promise((res) => {
       const endMarker = `_-end-${id}:`;
       const input = `${command}\recho "${endMarker}$?"`;
       const dataReader = this.uvPtyInstance.onData((data) => {
-        // Remove ansi sequences to see if this the exit marker
-        const lines = data.replaceAll(/\u001B\[[\d;?]*[A-Za-z]/g, '').split(/(\r\n|\n)/);
-        for (const line of lines) {
-          if (line.startsWith(endMarker)) {
-            const exit = line.substring(endMarker.length).trim();
-            let exitCode: number;
-            // Powershell outputs True / False for success
-            if (exit === 'True') {
-              exitCode = 0;
-            } else if (exit === 'False') {
-              exitCode = -999;
-            } else {
-              // Bash should output a number
-              exitCode = Number.parseInt(exit);
-              if (Number.isNaN(exitCode)) {
-                console.warn('Unable to parse exit code:', exit);
-                exitCode = -998;
-              }
-            }
-            dataReader.dispose();
-            res({ exitCode });
-            break;
-          }
-        }
         onData?.(data);
+
+        const exit = hasExited(data, endMarker);
+        if (!exit) return;
+
+        dataReader.dispose();
+        res({ exitCode: parseExitCode(exit) });
       });
       this.uvPtyInstance.write(`${input}\r`);
     });
@@ -405,7 +416,7 @@ export class VirtualEnvironment implements HasTelemetry {
     cwd: string = this.venvRootPath
   ): ChildProcess {
     log.info(`Running command: ${command} ${args.join(' ')} in ${cwd}`);
-    const childProcess: ChildProcess = spawn(command, args, {
+    const childProcess = spawn(command, args, {
       cwd,
       env: {
         ...process.env,
@@ -414,12 +425,12 @@ export class VirtualEnvironment implements HasTelemetry {
     });
 
     if (callbacks) {
-      childProcess.stdout?.on('data', (data: Buffer) => {
+      childProcess.stdout.on('data', (data: Buffer) => {
         console.log(data.toString());
         callbacks.onStdout?.(data.toString());
       });
 
-      childProcess.stderr?.on('data', (data: Buffer) => {
+      childProcess.stderr.on('data', (data: Buffer) => {
         console.log(data.toString());
         callbacks.onStderr?.(data.toString());
       });
@@ -459,7 +470,7 @@ export class VirtualEnvironment implements HasTelemetry {
     const config: PipInstallConfig = {
       packages: ['torch', 'torchvision', 'torchaudio'],
       indexUrl: torchMirror,
-      prerelease: torchMirror?.includes('nightly'),
+      prerelease: torchMirror.includes('nightly'),
     };
 
     const installArgs = getPipInstallArgs(config);
@@ -481,11 +492,11 @@ export class VirtualEnvironment implements HasTelemetry {
     });
     const { exitCode } = await this.runUvCommandAsync(installCmd, callbacks);
     if (exitCode !== 0) {
-      throw new Error(`Failed to install requirements.txt: exit code ${exitCode}`);
+      throw new Error(`Failed to install ComfyUI requirements.txt: exit code ${exitCode}`);
     }
   }
 
-  private async installComfyUIManagerRequirements(callbacks?: ProcessCallbacks): Promise<void> {
+  async installComfyUIManagerRequirements(callbacks?: ProcessCallbacks): Promise<void> {
     log.info(`Installing ComfyUIManager requirements from ${this.comfyUIManagerRequirementsPath}`);
     const installCmd = getPipInstallArgs({
       requirementsFile: this.comfyUIManagerRequirementsPath,
@@ -494,7 +505,7 @@ export class VirtualEnvironment implements HasTelemetry {
     });
     const { exitCode } = await this.runUvCommandAsync(installCmd, callbacks);
     if (exitCode !== 0) {
-      throw new Error(`Failed to install requirements.txt: exit code ${exitCode}`);
+      throw new Error(`Failed to install ComfyUI-Manager requirements.txt: exit code ${exitCode}`);
     }
   }
 
@@ -506,9 +517,11 @@ export class VirtualEnvironment implements HasTelemetry {
    * Checks if the virtual environment has all the required packages of ComfyUI core.
    *
    * Parses the text output of `uv pip install --dry-run -r requirements.txt`.
-   * @returns `true` if pip install does not detect any missing packages, otherwise `false`
+   * @returns `'OK'` if pip install does not detect any missing packages,
+   * `'manager-upgrade'` if `uv` and `toml` are missing,
+   * or `'error'` when any other combination of packages are missing.
    */
-  async hasRequirements() {
+  async hasRequirements(): Promise<'OK' | 'error' | 'manager-upgrade'> {
     const checkRequirements = async (requirementsPath: string) => {
       const args = ['pip', 'install', '--dry-run', '-r', requirementsPath];
       log.info(`Running direct process command: ${args.join(' ')}`);
@@ -525,16 +538,32 @@ export class VirtualEnvironment implements HasTelemetry {
         throw new Error(`Failed to get packages: Exit code ${result.exitCode}, signal ${result.signal}`);
       if (!output) throw new Error('Failed to get packages: uv output was empty');
 
+      return output;
+    };
+
+    const hasAllPackages = (output: string) => {
       const venvOk = output.search(/\bWould make no changes\s+$/) !== -1;
       if (!venvOk) log.warn(output);
-
       return venvOk;
     };
 
-    const coreOk = await checkRequirements(this.comfyUIRequirementsPath);
-    const managerOk = await checkRequirements(this.comfyUIManagerRequirementsPath);
+    // Manager upgrade in 0.4.18
+    const isManagerUpgrade = (output: string) => {
+      return output.search(/\bWould install 2 packages(\s+\+ (toml|uv)==[\d.]+){2}\s*$/) !== -1;
+    };
 
-    return coreOk && managerOk;
+    const coreOutput = await checkRequirements(this.comfyUIRequirementsPath);
+    const managerOutput = await checkRequirements(this.comfyUIManagerRequirementsPath);
+
+    const coreOk = hasAllPackages(coreOutput);
+    const managerOk = hasAllPackages(managerOutput);
+
+    if (coreOk && isManagerUpgrade(managerOutput)) {
+      log.info('ComfyUI-Manager requires toml and uv. Installing.');
+      return 'manager-upgrade';
+    }
+
+    return coreOk && managerOk ? 'OK' : 'error';
   }
 
   async clearUvCache(): Promise<boolean> {

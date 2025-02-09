@@ -7,9 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import si from 'systeminformation';
 
+import type { IComfySettings } from '@/config/comfySettings';
+
 import { IPC_CHANNELS } from '../constants';
 import { AppWindow } from '../main-process/appWindow';
-import { ComfyDesktopApp } from '../main-process/comfyDesktopApp';
 import { InstallOptions } from '../preload';
 import { DesktopConfig } from '../store/desktopConfig';
 import { compareVersions } from '../utils';
@@ -54,7 +55,7 @@ export class MixpanelTelemetry implements ITelemetry {
     this.storageFile = path.join(app.getPath('userData'), 'telemetry.txt');
     this.distinctId = this.getOrCreateDistinctId(this.storageFile);
     this.queue = [];
-    ipcMain.once(IPC_CHANNELS.INSTALL_COMFYUI, (_event, installOptions: InstallOptions) => {
+    ipcMain.on(IPC_CHANNELS.INSTALL_COMFYUI, (_event, installOptions: InstallOptions) => {
       if (installOptions.allowMetrics) {
         this.hasConsent = true;
       }
@@ -87,7 +88,7 @@ export class MixpanelTelemetry implements ITelemetry {
   track(eventName: string, properties?: PropertyDict): void {
     const defaultProperties = {
       distinct_id: this.distinctId,
-      time: new Date(),
+      time: Date.now(),
       $os: os.platform(),
     };
 
@@ -123,7 +124,7 @@ export class MixpanelTelemetry implements ITelemetry {
    */
   flush(): void {
     while (this.queue.length > 0) {
-      const { eventName, properties } = this.queue.pop()!;
+      const { eventName, properties } = this.queue.shift()!;
       this.mixpanelTrack(eventName, properties);
     }
   }
@@ -208,37 +209,31 @@ export interface HasTelemetry {
  * @param eventName
  * @returns
  */
-export function trackEvent(eventName: string) {
-  return function <T extends HasTelemetry>(target: T, propertyKey: string, descriptor: PropertyDescriptor) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+export function trackEvent<T extends HasTelemetry>(eventName: string) {
+  type DecoratedMethod = (this: T, ...args: never[]) => Promise<void>;
+  type MethodDescriptor = TypedPropertyDescriptor<DecoratedMethod>;
+
+  return function (target: T, propertyKey: string, descriptor: MethodDescriptor) {
     const originalMethod = descriptor.value;
 
-    // eslint-disable-next-line @typescript-eslint/require-await, @typescript-eslint/no-explicit-any
-    descriptor.value = async function (this: T, ...args: any[]) {
+    descriptor.value = async function (...args) {
       this.telemetry.track(`${eventName}_start`);
 
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-      return (
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-        originalMethod
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-          .apply(this, args)
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-          .then(() => {
-            this.telemetry.track(`${eventName}_end`);
-          })
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
-          .catch((error: Error) => {
-            this.telemetry.queueSentryEvent({
-              eventName: `${eventName}_error`,
-              properties: {
-                error_message: error.message,
-                error_name: error.name,
-              },
-            });
-            throw error;
-          })
-      );
+      return originalMethod!
+        .apply(this, args)
+        .then(() => {
+          this.telemetry.track(`${eventName}_end`);
+        })
+        .catch((error: Error) => {
+          this.telemetry.queueSentryEvent({
+            eventName: `${eventName}_error`,
+            properties: {
+              error_message: error.message,
+              error_name: error.name,
+            },
+          });
+          throw error;
+        });
     };
 
     return descriptor;
@@ -249,9 +244,9 @@ export function trackEvent(eventName: string) {
 export async function promptMetricsConsent(
   store: DesktopConfig,
   appWindow: AppWindow,
-  comfyDesktopApp: ComfyDesktopApp
+  comfySettings: IComfySettings
 ): Promise<boolean> {
-  const consent = comfyDesktopApp.comfySettings.get('Comfy-Desktop.SendStatistics') ?? false;
+  const consent = comfySettings.get('Comfy-Desktop.SendStatistics') ?? false;
   const consentedOn = store.get('versionConsentedMetrics');
   const isOutdated = !consentedOn || compareVersions(consentedOn, '0.4.12') < 0;
   if (!isOutdated) return consent;
@@ -265,8 +260,8 @@ export async function promptMetricsConsent(
     await appWindow.loadPage('metrics-consent');
     const newConsent = await consentPromise;
     if (newConsent !== consent) {
-      comfyDesktopApp.comfySettings.set('Comfy-Desktop.SendStatistics', newConsent);
-      await comfyDesktopApp.comfySettings.saveSettings();
+      comfySettings.set('Comfy-Desktop.SendStatistics', newConsent);
+      await comfySettings.saveSettings();
     }
 
     return newConsent;
