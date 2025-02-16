@@ -2,7 +2,7 @@ import log from 'electron-log/main';
 import { rm } from 'node:fs/promises';
 
 import { ComfyServerConfig } from '../config/comfyServerConfig';
-import { ComfySettings } from '../config/comfySettings';
+import { ComfySettings, useComfySettings } from '../config/comfySettings';
 import type { DesktopInstallState } from '../main_types';
 import type { InstallValidation } from '../preload';
 import { type ITelemetry, getTelemetry } from '../services/telemetry';
@@ -52,8 +52,7 @@ export class ComfyInstallation {
     /** The base path of the desktop app.  Models, nodes, and configuration are saved here by default. */
     basePath: string,
     /** The device type to use for the installation. */
-    public readonly telemetry: ITelemetry,
-    public comfySettings: ComfySettings
+    public readonly telemetry: ITelemetry
   ) {
     this._basePath = basePath;
     this._virtualEnvironment = this.createVirtualEnvironment(basePath);
@@ -63,9 +62,9 @@ export class ComfyInstallation {
     return new VirtualEnvironment(basePath, {
       telemetry: this.telemetry,
       selectedDevice: useDesktopConfig().get('selectedDevice'),
-      pythonMirror: this.comfySettings.get('Comfy-Desktop.UV.PythonInstallMirror'),
-      pypiMirror: this.comfySettings.get('Comfy-Desktop.UV.PypiInstallMirror'),
-      torchMirror: this.comfySettings.get('Comfy-Desktop.UV.TorchInstallMirror'),
+      pythonMirror: useComfySettings().get('Comfy-Desktop.UV.PythonInstallMirror'),
+      pypiMirror: useComfySettings().get('Comfy-Desktop.UV.PypiInstallMirror'),
+      torchMirror: useComfySettings().get('Comfy-Desktop.UV.TorchInstallMirror'),
     });
   }
 
@@ -79,9 +78,8 @@ export class ComfyInstallation {
     const state = config.get('installState');
     const basePath = config.get('basePath');
     if (state && basePath) {
-      const comfySettings = new ComfySettings(basePath);
-      await comfySettings.loadSettings();
-      return new ComfyInstallation(state, basePath, getTelemetry(), comfySettings);
+      await ComfySettings.load(basePath);
+      return new ComfyInstallation(state, basePath, getTelemetry());
     }
   }
 
@@ -215,9 +213,10 @@ export class ComfyInstallation {
 
     this._basePath = basePath;
     this._virtualEnvironment = this.createVirtualEnvironment(basePath);
-    this.comfySettings = new ComfySettings(basePath);
-    await this.comfySettings.loadSettings();
     useDesktopConfig().set('basePath', basePath);
+
+    // If settings file exists at new location, load it
+    await ComfySettings.load(basePath);
   }
 
   /**

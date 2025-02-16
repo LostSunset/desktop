@@ -13,6 +13,7 @@ import {
 } from 'electron';
 import log from 'electron-log/main';
 import Store from 'electron-store';
+import { debounce } from 'lodash';
 import path from 'node:path';
 import { URL } from 'node:url';
 
@@ -286,20 +287,29 @@ export class AppWindow {
   }
 
   private setupWindowEvents(): void {
-    const updateBounds = () => {
-      if (!this.window) return;
+    const updateBounds = debounce(
+      () => {
+        if (!this.window) return;
 
-      // If maximized, do not update position / size.
-      const isMaximized = this.window.isMaximized();
-      this.store.set('windowMaximized', isMaximized);
-      if (isMaximized) return;
+        const windowMaximized = this.window.isMaximized();
+        const bounds = this.window.getBounds();
 
-      const { width, height, x, y } = this.window.getBounds();
-      this.store.set('windowWidth', width);
-      this.store.set('windowHeight', height);
-      this.store.set('windowX', x);
-      this.store.set('windowY', y);
-    };
+        // If maximized, do not update position / size, as it prevents restoring size when un-maximizing
+        const windowSizePos: Partial<AppWindowSettings> = {
+          windowWidth: bounds.width,
+          windowHeight: bounds.height,
+          windowX: bounds.x,
+          windowY: bounds.y,
+        };
+
+        this.store.set({
+          windowMaximized,
+          ...(windowMaximized ? {} : windowSizePos),
+        });
+      },
+      256,
+      { leading: true, trailing: true }
+    );
 
     this.window.on('resize', updateBounds);
     this.window.on('move', updateBounds);
@@ -314,8 +324,7 @@ export class AppWindow {
 
   private setupAppEvents(): void {
     app.on('second-instance', (event, commandLine, workingDirectory, additionalData) => {
-      log.info('Received second instance message!');
-      log.info(additionalData);
+      log.info('Received second instance message!', additionalData);
 
       if (this.isMinimized()) this.restore();
       this.focus();
@@ -342,7 +351,7 @@ export class AppWindow {
       while (this.messageQueue.length > 0) {
         const message = this.messageQueue.shift();
         if (message) {
-          log.info('Sending queued message ', message.channel, message.data);
+          log.info('Sending queued message', message);
           this.window.webContents.send(message.channel, message.data);
         }
       }

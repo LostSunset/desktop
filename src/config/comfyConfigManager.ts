@@ -58,7 +58,7 @@ export class ComfyConfigManager {
     try {
       this.createNestedDirectories(localComfyDirectory, this.DEFAULT_DIRECTORIES);
     } catch (error) {
-      log.error(`Failed to create ComfyUI directories: ${error}`);
+      log.error('Failed to create ComfyUI directories:', error);
     }
   }
 
@@ -76,10 +76,10 @@ export class ComfyConfigManager {
             this.createNestedDirectories(newBasePath, subDirs);
           }
         } else {
-          log.warn(`Invalid directory structure item: ${JSON.stringify(item)}`);
+          log.warn('Invalid directory structure item:', item);
         }
       } else {
-        log.warn(`Invalid directory structure item: ${JSON.stringify(item)}`);
+        log.warn('Invalid directory structure item:', item);
       }
     }
   }

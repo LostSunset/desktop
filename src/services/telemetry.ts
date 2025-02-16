@@ -7,13 +7,14 @@ import os from 'node:os';
 import path from 'node:path';
 import si from 'systeminformation';
 
-import type { IComfySettings } from '@/config/comfySettings';
+import { useComfySettings } from '@/config/comfySettings';
 
 import { IPC_CHANNELS } from '../constants';
 import { AppWindow } from '../main-process/appWindow';
 import { InstallOptions } from '../preload';
 import { DesktopConfig } from '../store/desktopConfig';
 import { compareVersions } from '../utils';
+import { captureSentryException } from './sentry';
 
 let instance: ITelemetry | null = null;
 export interface ITelemetry {
@@ -21,10 +22,6 @@ export interface ITelemetry {
   track(eventName: string, properties?: PropertyDict): void;
   flush(): void;
   registerHandlers(): void;
-  queueSentryEvent(props: MixPanelEvent): void;
-  popSentryEvent(): MixPanelEvent | undefined;
-  hasPendingSentryEvents(): boolean;
-  clearSentryQueue(): void;
 }
 
 interface GpuInfo {
@@ -46,7 +43,6 @@ export class MixpanelTelemetry implements ITelemetry {
   private readonly queue: MixPanelEvent[] = [];
   private readonly mixpanelClient: mixpanel.Mixpanel;
   private cachedGpuInfo: GpuInfo[] | null = null;
-  private sentryQueue: MixPanelEvent[] = [];
   constructor(mixpanelClass: mixpanel.Mixpanel) {
     this.mixpanelClient = mixpanelClass.init(MIXPANEL_TOKEN, {
       geolocate: true,
@@ -93,7 +89,7 @@ export class MixpanelTelemetry implements ITelemetry {
     };
 
     if (!this.hasConsent) {
-      log.debug(`Queueing event ${eventName} with properties ${JSON.stringify(properties)}`);
+      log.debug(`Queueing event ${eventName} with properties`, properties);
       this.queue.push({
         eventName,
         properties: {
@@ -139,22 +135,6 @@ export class MixpanelTelemetry implements ITelemetry {
     });
   }
 
-  hasPendingSentryEvents() {
-    return this.sentryQueue.length > 0;
-  }
-
-  queueSentryEvent(props: MixPanelEvent) {
-    this.sentryQueue.push(props);
-  }
-
-  popSentryEvent() {
-    return this.sentryQueue.shift();
-  }
-
-  clearSentryQueue() {
-    this.sentryQueue = [];
-  }
-
   /**
    * Fetch GPU information and cache it.
    */
@@ -183,10 +163,10 @@ export class MixpanelTelemetry implements ITelemetry {
 
   private mixpanelTrack(eventName: string, properties: PropertyDict): void {
     if (app.isPackaged) {
-      log.debug(`Tracking ${eventName} with properties ${JSON.stringify(properties)}`);
+      log.debug(`Tracking ${eventName} with properties`, properties);
       this.mixpanelClient.track(eventName, properties);
     } else {
-      log.info(`Would have tracked ${eventName} with properties ${JSON.stringify(properties)}`);
+      log.info(`Would have tracked ${eventName} with properties`, properties);
     }
   }
 }
@@ -225,12 +205,11 @@ export function trackEvent<T extends HasTelemetry>(eventName: string) {
           this.telemetry.track(`${eventName}_end`);
         })
         .catch((error: Error) => {
-          this.telemetry.queueSentryEvent({
-            eventName: `${eventName}_error`,
-            properties: {
-              error_message: error.message,
-              error_name: error.name,
-            },
+          const sentryUrl = captureSentryException(error);
+          this.telemetry.track(`${eventName}_error`, {
+            error_message: error.message,
+            error_name: error.name,
+            sentry_url: sentryUrl,
           });
           throw error;
         });
@@ -241,12 +220,8 @@ export function trackEvent<T extends HasTelemetry>(eventName: string) {
 }
 
 /** @returns Whether the user has consented to sending metrics. */
-export async function promptMetricsConsent(
-  store: DesktopConfig,
-  appWindow: AppWindow,
-  comfySettings: IComfySettings
-): Promise<boolean> {
-  const consent = comfySettings.get('Comfy-Desktop.SendStatistics') ?? false;
+export async function promptMetricsConsent(store: DesktopConfig, appWindow: AppWindow): Promise<boolean> {
+  const consent = useComfySettings().get('Comfy-Desktop.SendStatistics') ?? false;
   const consentedOn = store.get('versionConsentedMetrics');
   const isOutdated = !consentedOn || compareVersions(consentedOn, '0.4.12') < 0;
   if (!isOutdated) return consent;
@@ -260,8 +235,8 @@ export async function promptMetricsConsent(
     await appWindow.loadPage('metrics-consent');
     const newConsent = await consentPromise;
     if (newConsent !== consent) {
-      comfySettings.set('Comfy-Desktop.SendStatistics', newConsent);
-      await comfySettings.saveSettings();
+      useComfySettings().set('Comfy-Desktop.SendStatistics', newConsent);
+      await useComfySettings().saveSettings();
     }
 
     return newConsent;

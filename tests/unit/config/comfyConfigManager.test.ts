@@ -1,3 +1,4 @@
+import log from 'electron-log/main';
 import fs, { type PathLike } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,13 +10,6 @@ const { normalize } = path;
 
 // Mock the fs module
 vi.mock('node:fs');
-vi.mock('electron-log/main', () => ({
-  default: {
-    info: vi.fn(),
-    error: vi.fn(),
-    warn: vi.fn(),
-  },
-}));
 
 describe('ComfyConfigManager', () => {
   // Reset all mocks before each test
@@ -92,16 +86,15 @@ describe('ComfyConfigManager', () => {
       expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/custom_nodes'), { recursive: true });
     });
 
-    it('should catch and log errors when creating directories', async () => {
+    it('should catch and log errors when creating directories', () => {
       vi.mocked(fs.mkdirSync).mockImplementationOnce(() => {
         throw new Error('Permission denied');
       });
 
-      const log = await import('electron-log/main');
       ComfyConfigManager.createComfyDirectories('/fake/path/ComfyUI');
 
       expect(fs.mkdirSync).toHaveBeenCalled();
-      expect(vi.mocked(log.default.error)).toHaveBeenCalledWith(expect.stringContaining('Permission denied'));
+      expect(log.default.error).toHaveBeenCalledWith('Failed to create ComfyUI directories:', expect.any(Error));
     });
   });
 

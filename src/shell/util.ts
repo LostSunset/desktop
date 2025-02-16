@@ -13,5 +13,12 @@ export function getDefaultShell(): string {
 }
 
 export function getDefaultShellArgs(): string[] {
-  return os.platform() === 'darwin' ? ['-df'] : [];
+  switch (os.platform()) {
+    case 'darwin':
+      return ['-df']; // Prevent loading initialization files for zsh
+    case 'linux':
+      return ['--noprofile', '--norc'];
+    default:
+      return [];
+  }
 }

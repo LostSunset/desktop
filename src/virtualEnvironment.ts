@@ -8,6 +8,7 @@ import path from 'node:path';
 
 import { CUDA_TORCH_URL, DEFAULT_PYPI_INDEX_URL, NIGHTLY_CPU_TORCH_URL } from './constants';
 import type { TorchDeviceType } from './preload';
+import { captureSentryException } from './services/sentry';
 import { HasTelemetry, ITelemetry, trackEvent } from './services/telemetry';
 import { getDefaultShell, getDefaultShellArgs } from './shell/util';
 import { pathAccessible } from './utils';
@@ -92,7 +93,7 @@ function fixDeviceMirrorMismatch(device: TorchDeviceType, mirror: string | undef
  * @todo Split either installation or terminal management to a separate class.
  */
 export class VirtualEnvironment implements HasTelemetry {
-  readonly venvRootPath: string;
+  readonly basePath: string;
   readonly venvPath: string;
   readonly pythonVersion: string;
   readonly uvPath: string;
@@ -124,7 +125,7 @@ export class VirtualEnvironment implements HasTelemetry {
         handleFlowControl: false,
         conptyInheritCursor: false,
         name: 'xterm',
-        cwd: this.venvRootPath,
+        cwd: this.basePath,
         env,
       });
     }
@@ -132,7 +133,7 @@ export class VirtualEnvironment implements HasTelemetry {
   }
 
   constructor(
-    venvPath: string,
+    basePath: string,
     {
       telemetry,
       selectedDevice,
@@ -149,7 +150,7 @@ export class VirtualEnvironment implements HasTelemetry {
       torchMirror?: string;
     }
   ) {
-    this.venvRootPath = venvPath;
+    this.basePath = basePath;
     this.telemetry = telemetry;
     this.pythonVersion = pythonVersion ?? '3.12';
     this.selectedDevice = selectedDevice ?? 'cpu';
@@ -158,7 +159,7 @@ export class VirtualEnvironment implements HasTelemetry {
     this.torchMirror = fixDeviceMirrorMismatch(selectedDevice!, torchMirror);
 
     // uv defaults to .venv
-    this.venvPath = path.join(venvPath, '.venv');
+    this.venvPath = path.join(basePath, '.venv');
     const resourcesPath = app.isPackaged ? path.join(process.resourcesPath) : path.join(app.getAppPath(), 'assets');
     this.comfyUIRequirementsPath = path.join(resourcesPath, 'ComfyUI', 'requirements.txt');
     this.comfyUIManagerRequirementsPath = path.join(
@@ -169,7 +170,7 @@ export class VirtualEnvironment implements HasTelemetry {
       'requirements.txt'
     );
 
-    this.cacheDir = path.join(venvPath, 'uv-cache');
+    this.cacheDir = path.join(basePath, 'uv-cache');
 
     const filename = `${compiledRequirements()}.compiled`;
     this.requirementsCompiledPath = path.join(resourcesPath, 'requirements', filename);
@@ -249,24 +250,26 @@ export class VirtualEnvironment implements HasTelemetry {
         this.telemetry.track(`install_flow:virtual_environment_create_end`, {
           reason: 'already_exists',
         });
-        log.info(`Virtual environment already exists at ${this.venvPath}`);
+        log.info('Virtual environment already exists at', this.venvPath);
         return;
       }
 
       await this.createVenvWithPython(callbacks);
       await this.ensurePip(callbacks);
       await this.installRequirements(callbacks);
-      this.telemetry.track(`install_flow:virtual_environment_create_end`, {
+      this.telemetry.track('install_flow:virtual_environment_create_end', {
         reason: 'success',
       });
-      log.info(`Successfully created virtual environment at ${this.venvPath}`);
+      log.info('Successfully created virtual environment at', this.venvPath);
     } catch (error) {
-      this.telemetry.track(`install_flow:virtual_environment_create_error`, {
+      const sentryUrl = captureSentryException(error instanceof Error ? error : new Error(String(error)));
+      this.telemetry.track('install_flow:virtual_environment_create_error', {
         error_name: error instanceof Error ? error.name : 'UnknownError',
         error_type: error instanceof Error ? error.constructor.name : typeof error,
         error_message: error instanceof Error ? error.message : 'Unknown error occurred',
+        sentry_url: sentryUrl,
       });
-      log.error(`Error creating virtual environment: ${error}`);
+      log.error('Error creating virtual environment:', error);
       throw error;
     }
   }
@@ -274,7 +277,7 @@ export class VirtualEnvironment implements HasTelemetry {
   @trackEvent('install_flow:virtual_environment_create_python')
   public async createVenvWithPython(callbacks?: ProcessCallbacks): Promise<void> {
     log.info(`Creating virtual environment at ${this.venvPath} with python ${this.pythonVersion}`);
-    const args = ['venv', '--python', this.pythonVersion];
+    const args = ['venv', '--python', this.pythonVersion, '--python-preference', 'only-managed'];
     const { exitCode } = await this.runUvCommandAsync(args, callbacks);
 
     if (exitCode !== 0) {
@@ -363,8 +366,9 @@ export class VirtualEnvironment implements HasTelemetry {
    */
   private async runUvCommandAsync(args: string[], callbacks?: ProcessCallbacks): Promise<{ exitCode: number | null }> {
     const uvCommand = os.platform() === 'win32' ? `& "${this.uvPath}"` : this.uvPath;
-    log.info(`Running uv command: ${uvCommand} ${args.join(' ')}`);
-    return this.runPtyCommandAsync(`${uvCommand} ${args.map((a) => `"${a}"`).join(' ')}`, callbacks?.onStdout);
+    const command = `${uvCommand} ${args.map((a) => `"${a}"`).join(' ')}`;
+    log.info('Running uv command:', command);
+    return this.runPtyCommandAsync(command, callbacks?.onStdout);
   }
 
   private async runPtyCommandAsync(command: string, onData?: (data: string) => void): Promise<{ exitCode: number }> {
@@ -413,7 +417,7 @@ export class VirtualEnvironment implements HasTelemetry {
     args: string[],
     env: Record<string, string>,
     callbacks?: ProcessCallbacks,
-    cwd: string = this.venvRootPath
+    cwd: string = this.basePath
   ): ChildProcess {
     log.info(`Running command: ${command} ${args.join(' ')} in ${cwd}`);
     const childProcess = spawn(command, args, {
@@ -475,7 +479,7 @@ export class VirtualEnvironment implements HasTelemetry {
 
     const installArgs = getPipInstallArgs(config);
 
-    log.info(`Installing PyTorch with config: ${JSON.stringify(config)}`);
+    log.info('Installing PyTorch with config:', config);
     const { exitCode } = await this.runUvCommandAsync(installArgs, callbacks);
 
     if (exitCode !== 0) {
@@ -598,7 +602,7 @@ export class VirtualEnvironment implements HasTelemetry {
     try {
       await this.#using(() => this.manualInstall(callbacks));
     } catch (error) {
-      log.error(`Failed to reinstall requirements: ${error}`);
+      log.error('Failed to reinstall requirements:', error);
 
       const created = await this.createVenv(onData);
       if (!created) return false;

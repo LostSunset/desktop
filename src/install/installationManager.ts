@@ -1,8 +1,6 @@
 import { Notification, app, dialog, ipcMain, shell } from 'electron';
 import log from 'electron-log/main';
 
-import { ComfySettings } from '@/config/comfySettings';
-
 import { IPC_CHANNELS, ProgressStatus } from '../constants';
 import type { AppWindow } from '../main-process/appWindow';
 import { ComfyInstallation } from '../main-process/comfyInstallation';
@@ -10,7 +8,7 @@ import type { InstallOptions } from '../preload';
 import { CmCli } from '../services/cmCli';
 import { type HasTelemetry, ITelemetry, trackEvent } from '../services/telemetry';
 import { type DesktopConfig, useDesktopConfig } from '../store/desktopConfig';
-import { ansiCodes, canExecuteShellCommand, validateHardware } from '../utils';
+import { canExecuteShellCommand, validateHardware } from '../utils';
 import type { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
 import { InstallWizard } from './installWizard';
 
@@ -161,7 +159,7 @@ export class InstallationManager implements HasTelemetry {
 
     // Check available GPU
     const hardware = await validateHardware();
-    if (typeof hardware?.gpu === 'string') config.set('detectedGpu', hardware.gpu);
+    if (typeof hardware.gpu === 'string') config.set('detectedGpu', hardware.gpu);
 
     /** Resovles when the user has confirmed all install options */
     const optionsPromise = new Promise<InstallOptions>((resolve) => {
@@ -238,20 +236,18 @@ export class InstallationManager implements HasTelemetry {
       useDesktopConfig().set('migrateCustomNodesFrom', installWizard.migrationSource);
     }
 
-    const comfySettings = new ComfySettings(installWizard.basePath);
-    await comfySettings.loadSettings();
-    const installation = new ComfyInstallation('started', installWizard.basePath, this.telemetry, comfySettings);
+    const installation = new ComfyInstallation('started', installWizard.basePath, this.telemetry);
     InstallationManager.setReinstallHandler(installation);
     const { virtualEnvironment } = installation;
 
     // Virtual terminal output callbacks
     const processCallbacks: ProcessCallbacks = {
       onStdout: (data) => {
-        log.info(data.replaceAll(ansiCodes, ''));
+        log.info(data);
         this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
       },
       onStderr: (data) => {
-        log.error(data.replaceAll(ansiCodes, ''));
+        log.error(data);
         this.appWindow.send(IPC_CHANNELS.LOG_MESSAGE, data);
       },
     };

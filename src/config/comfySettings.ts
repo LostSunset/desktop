@@ -29,6 +29,15 @@ export interface ComfySettingsData {
   [key: string]: unknown;
 }
 
+/** Backing ref for the singleton settings instance. */
+let current: ComfySettings;
+
+/** Service locator for settings. ComfySettings.load() must be called before access. */
+export function useComfySettings() {
+  if (!current) throw new Error('Cannot access ComfySettings before initialization.');
+  return current;
+}
+
 /**
  * A read-only interface to an in-memory cache of frontend settings.
  * @see {@link ComfySettings} concrete implementation
@@ -75,12 +84,12 @@ export interface IComfySettings extends FrontendSettingsCache {
  * @see {@link IComfySettings} read-write interface
  */
 export class ComfySettings implements IComfySettings {
-  public readonly filePath: string;
   private settings: ComfySettingsData = structuredClone(DEFAULT_SETTINGS);
   private static writeLocked = false;
+  readonly #basePath: string;
 
-  constructor(basePath: string) {
-    this.filePath = path.join(basePath, 'user', 'default', 'comfy.settings.json');
+  private constructor(basePath: string) {
+    this.#basePath = basePath;
   }
 
   /**
@@ -91,7 +100,11 @@ export class ComfySettings implements IComfySettings {
     ComfySettings.writeLocked = true;
   }
 
-  public async loadSettings() {
+  get filePath(): string {
+    return path.join(this.#basePath, 'user', 'default', 'comfy.settings.json');
+  }
+
+  private async loadSettings() {
     try {
       await fs.access(this.filePath);
     } catch {
@@ -102,9 +115,13 @@ export class ComfySettings implements IComfySettings {
       const fileContent = await fs.readFile(this.filePath, 'utf8');
       // TODO: Reimplement with validation and error reporting.
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-      this.settings = JSON.parse(fileContent);
+      this.settings = { ...this.settings, ...JSON.parse(fileContent) };
     } catch (error) {
-      log.error(`Settings file cannot be loaded.`, error);
+      if (error instanceof SyntaxError) {
+        log.error(`Settings file contains invalid JSON:`, error);
+      } else {
+        log.error(`Settings file cannot be loaded.`, error);
+      }
     }
   }
 
@@ -134,5 +151,17 @@ export class ComfySettings implements IComfySettings {
 
   get<K extends keyof ComfySettingsData>(key: K): ComfySettingsData[K] {
     return this.settings[key] ?? DEFAULT_SETTINGS[key];
+  }
+
+  /**
+   * Static factory method. Loads the settings from disk.
+   * @param basePath The base path where ComfyUI is installed
+   * @returns The newly created instance
+   */
+  static async load(basePath: string): Promise<ComfySettings> {
+    const instance = new ComfySettings(basePath);
+    await instance.loadSettings();
+    current = instance;
+    return instance;
   }
 }

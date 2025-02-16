@@ -13,20 +13,26 @@ import { Terminal } from '@/shell/terminal';
 import { findAvailablePort, getModelsDirectory } from '@/utils';
 
 // Mock dependencies
+vi.mock('@/config/comfySettings', () => {
+  const mockSettings = {
+    get: vi.fn().mockReturnValue(true),
+    set: vi.fn(),
+    saveSettings: vi.fn(),
+  };
+  return {
+    ComfySettings: {
+      load: vi.fn().mockResolvedValue(mockSettings),
+    },
+    useComfySettings: vi.fn().mockReturnValue(mockSettings),
+  };
+});
+
 vi.mock('electron', () => ({
   app: {
     on: vi.fn(),
   },
   ipcMain: {
     handle: vi.fn(),
-  },
-}));
-
-vi.mock('electron-log/main', () => ({
-  default: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    error: vi.fn(),
   },
 }));
 
@@ -113,7 +119,6 @@ describe('ComfyDesktopApp', () => {
         updateReadyAction: { showInstallAndRestartPrompt: 'always', showNotification: 'always' },
         autoUpdater: true,
       });
-      expect(todesktop.autoUpdater?.setFeedURL).toHaveBeenCalledWith('https://updater.comfy.org');
     });
   });
 

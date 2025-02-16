@@ -234,12 +234,13 @@ __metadata:
     "@sentry/electron": "npm:^5.4.0"
     "@sentry/vite-plugin": "npm:^2.22.6"
     "@sentry/wizard": "npm:^3.30.0"
-    "@todesktop/cli": "npm:^1.9.7"
+    "@todesktop/cli": "npm:^1.12.0"
     "@todesktop/runtime": "npm:^1.6.4"
     "@trivago/prettier-plugin-sort-imports": "npm:^5.2.1"
     "@types/adm-zip": "npm:^0.5.5"
     "@types/electron-squirrel-startup": "npm:^1.0.2"
     "@types/eslint__js": "npm:^8.42.3"
+    "@types/lodash": "npm:4.17.15"
     "@types/node": "npm:^22.10.2"
     "@types/tar": "npm:6.1.13"
     "@types/tmp": "npm:^0.2.6"
@@ -259,6 +260,7 @@ __metadata:
     globals: "npm:^15.13.0"
     husky: "npm:^9.1.6"
     lint-staged: "npm:^15.2.10"
+    lodash: "npm:4.17.21"
     mixpanel: "npm:^0.18.0"
     node-pty: "npm:^1.0.0"
     prettier: "npm:^3.3.3"
@@ -2604,9 +2606,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@todesktop/cli@npm:^1.9.7":
-  version: 1.11.5
-  resolution: "@todesktop/cli@npm:1.11.5"
+"@todesktop/cli@npm:^1.12.0":
+  version: 1.12.0
+  resolution: "@todesktop/cli@npm:1.12.0"
   dependencies:
     "@sentry/node": "npm:^8.35.0"
     ajv: "npm:^8.11.2"
@@ -2653,7 +2655,7 @@ __metadata:
     xdg-basedir: "npm:^4.0.0"
   bin:
     todesktop: dist/cli.js
-  checksum: 10c0/1919f89828a81a62a3744ece78c2f10c64cf55ba3714ba690b69cefec106015779c661bceb1be19cf58bb94dc63ec1eb46c1a04e32d7c93eae325d46d0ab88c0
+  checksum: 10c0/5443f25a70e8ba531b02063847ca44f7efebb0e19c84f4c2bb17df8720c039d2600e8e02df4bf677e58c7209003acfb0802cc55e9d052d75ac03bc244dd7747c
   languageName: node
   linkType: hard
 
@@ -2847,6 +2849,13 @@ __metadata:
   dependencies:
     "@types/node": "npm:*"
   checksum: 10c0/ff8f54fc49621210291f815fe5b15d809fd7d032941b3180743440bd507ecdf08b9e844625fa346af568c84bf34114eb378dcdc3e921a08ba1e2a08d7e3c809c
+  languageName: node
+  linkType: hard
+
+"@types/lodash@npm:4.17.15":
+  version: 4.17.15
+  resolution: "@types/lodash@npm:4.17.15"
+  checksum: 10c0/2eb2dc6d231f5fb4603d176c08c8d7af688f574d09af47466a179cd7812d9f64144ba74bb32ca014570ffdc544eedc51b7a5657212bad083b6eecbd72223f9bb
   languageName: node
   linkType: hard
 
@@ -8239,7 +8248,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lodash@npm:^4.17.12, lodash@npm:^4.17.15, lodash@npm:^4.17.20, lodash@npm:^4.17.21, lodash@npm:~4.17.15":
+"lodash@npm:4.17.21, lodash@npm:^4.17.12, lodash@npm:^4.17.15, lodash@npm:^4.17.20, lodash@npm:^4.17.21, lodash@npm:~4.17.15":
   version: 4.17.21
   resolution: "lodash@npm:4.17.21"
   checksum: 10c0/d8cbea072bb08655bb4c989da418994b073a608dffa608b09ac04b43a791b12aeae7cd7ad919aa4c925f33b48490b5cfe6c1f71d827956071dae2e7bb3a6b74c
