@@ -22,15 +22,17 @@ export class ComfyDesktopApp implements HasTelemetry {
     readonly installation: ComfyInstallation,
     readonly appWindow: AppWindow,
     readonly telemetry: ITelemetry
-  ) {}
+  ) {
+    this.registerIPCHandlers();
+    this.initializeTodesktop();
+  }
 
   get basePath() {
     return this.installation.basePath;
   }
 
-  public initialize(): void {
-    this.registerIPCHandlers();
-    this.initializeTodesktop();
+  get serverRunning() {
+    return this.comfyServer?.isRunning ?? false;
   }
 
   /**
@@ -73,16 +75,8 @@ export class ComfyDesktopApp implements HasTelemetry {
 
   registerIPCHandlers(): void {
     // Restart core
-    ipcMain.handle(IPC_CHANNELS.RESTART_CORE, async (): Promise<boolean> => {
-      if (!this.comfyServer) return false;
+    ipcMain.handle(IPC_CHANNELS.RESTART_CORE, async (): Promise<boolean> => await this.restartComfyServer());
 
-      await this.comfyServer.kill();
-      await this.comfyServer.start();
-      return true;
-    });
-  }
-
-  async startComfyServer(serverArgs: ServerArgs) {
     app.on('before-quit', () => {
       if (!this.comfyServer) return;
 
@@ -91,6 +85,18 @@ export class ComfyDesktopApp implements HasTelemetry {
         log.error('Python server did not exit properly', error);
       });
     });
+  }
+
+  /** Performs a process restart of the ComfyUI server. Does not discard instance / terminal. */
+  async restartComfyServer(): Promise<boolean> {
+    if (!this.comfyServer) return false;
+
+    await this.comfyServer.kill();
+    await this.comfyServer.start();
+    return true;
+  }
+
+  async startComfyServer(serverArgs: ServerArgs) {
     log.info('Server start');
     if (!this.appWindow.isOnPage('server-start')) {
       await this.appWindow.loadPage('server-start');
@@ -100,24 +106,48 @@ export class ComfyDesktopApp implements HasTelemetry {
 
     const { virtualEnvironment } = this.installation;
 
+    if (this.comfyServer?.isRunning) {
+      log.error('ComfyUI server is already running');
+      throw new Error('ComfyUI server is already running');
+    }
+
     this.appWindow.sendServerStartProgress(ProgressStatus.STARTING_SERVER);
-    this.comfyServer = new ComfyServer(this.basePath, serverArgs, virtualEnvironment, this.appWindow, this.telemetry);
+    this.comfyServer ??= new ComfyServer(this.basePath, serverArgs, virtualEnvironment, this.appWindow, this.telemetry);
     await this.comfyServer.start();
     this.initializeTerminal(virtualEnvironment);
   }
 
+  async stopComfyServer() {
+    const { comfyServer } = this;
+    if (!comfyServer) return;
+
+    if (comfyServer.isRunning) await comfyServer.kill();
+    this.comfyServer = null;
+  }
+
   private initializeTerminal(virtualEnvironment: VirtualEnvironment) {
+    if (this.terminal) {
+      try {
+        this.terminal.pty.kill();
+      } catch {
+        // Do nothing.
+      }
+    }
+
     this.terminal = new Terminal(this.appWindow, this.basePath, virtualEnvironment.uvPath);
     this.terminal.write(virtualEnvironment.activateEnvironmentCommand());
 
+    ipcMain.removeHandler(IPC_CHANNELS.TERMINAL_WRITE);
     ipcMain.handle(IPC_CHANNELS.TERMINAL_WRITE, (_event, command: string) => {
       this.terminal?.write(command);
     });
 
+    ipcMain.removeHandler(IPC_CHANNELS.TERMINAL_RESIZE);
     ipcMain.handle(IPC_CHANNELS.TERMINAL_RESIZE, (_event, cols: number, rows: number) => {
       this.terminal?.resize(cols, rows);
     });
 
+    ipcMain.removeHandler(IPC_CHANNELS.TERMINAL_RESTORE);
     ipcMain.handle(IPC_CHANNELS.TERMINAL_RESTORE, () => {
       return this.terminal?.restore();
     });

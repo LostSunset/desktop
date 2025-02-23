@@ -1,4 +1,5 @@
 import { type Page, type TestInfo, test as baseTest } from '@playwright/test';
+import path from 'node:path';
 import { env } from 'node:process';
 import { pathExists } from 'tests/shared/utils';
 
@@ -7,6 +8,7 @@ import { TestGraphCanvas } from './testGraphCanvas';
 import { TestInstallWizard } from './testInstallWizard';
 import { TestInstalledApp } from './testInstalledApp';
 import { TestServerStart } from './testServerStart';
+import { TestTroubleshooting } from './testTroubleshooting';
 
 export { expect } from '@playwright/test';
 
@@ -16,9 +18,9 @@ export function assertPlaywrightEnabled() {
   throw new Error('COMFYUI_ENABLE_VOLATILE_TESTS must be set to "1"  to run tests.');
 }
 
-async function attachIfExists(testInfo: TestInfo, path: string) {
-  if (await pathExists(path)) {
-    await testInfo.attach('main.log', { path });
+async function attachIfExists(testInfo: TestInfo, fullPath: string) {
+  if (await pathExists(fullPath)) {
+    await testInfo.attach(path.basename(fullPath), { path: fullPath });
   }
 }
 
@@ -32,6 +34,8 @@ interface DesktopTestFixtures {
   app: TestApp;
   /** The main window of the app. A normal Playwright page. */
   window: Page;
+  /** The desktop troubleshooting screen. */
+  troubleshooting: TestTroubleshooting;
   /** The desktop install wizard. */
   installWizard: TestInstallWizard;
   /** The server start screen. */
@@ -61,13 +65,23 @@ export const test = baseTest.extend<DesktopTestOptions & DesktopTestFixtures>({
     await attachIfExists(testInfo, app.testEnvironment.mainLogPath);
     await attachIfExists(testInfo, app.testEnvironment.comfyuiLogPath);
   },
-  window: async ({ app }, use) => {
+  window: async ({ app }, use, testInfo) => {
     const window = await app.firstWindow();
     await use(window);
+
+    // Attach a screenshot if any errors occurred
+    if (testInfo.error) {
+      const screenshot = await window.screenshot();
+      await testInfo.attach('Tear-down screenshot.png', { body: screenshot, contentType: 'image/png' });
+    }
   },
   installedApp: async ({ window }, use) => {
     const installedApp = new TestInstalledApp(window);
     await use(installedApp);
+  },
+  troubleshooting: async ({ window }, use) => {
+    const troubleshooting = new TestTroubleshooting(window);
+    await use(troubleshooting);
   },
 
   // Views
@@ -90,5 +104,10 @@ export const test = baseTest.extend<DesktopTestOptions & DesktopTestFixtures>({
       await testInfo.attach(name, { body: screenshot, contentType: 'image/png' });
     };
     await use(attachScreenshot);
+
+    // When this fixture is requested but no screenshot is attached, attach a fallback
+    if (!testInfo.attachments.some((a) => a.contentType === 'image/png')) {
+      await attachScreenshot('Fallback screenshot.png');
+    }
   },
 });

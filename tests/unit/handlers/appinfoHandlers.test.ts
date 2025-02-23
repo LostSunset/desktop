@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
   app: {
     isPackaged: false,
     getPath: vi.fn(),
-    getVersion: vi.fn().mockReturnValue('1.0.0'),
+    getVersion: vi.fn(() => '1.0.0'),
   },
   ipcMain: {
     on: vi.fn(),
@@ -21,17 +21,17 @@ vi.mock('electron', () => ({
 }));
 
 vi.mock('@/store/desktopConfig', () => ({
-  useDesktopConfig: vi.fn().mockReturnValue({
-    get: vi.fn().mockImplementation((key) => {
+  useDesktopConfig: vi.fn(() => ({
+    get: vi.fn((key: string) => {
       if (key === 'basePath') return MOCK_BASE_PATH;
     }),
-    set: vi.fn().mockReturnValue(true),
-    getAsync: vi.fn().mockImplementation((key) => {
+    set: vi.fn(),
+    getAsync: vi.fn((key: string) => {
       if (key === 'windowStyle') return Promise.resolve(MOCK_WINDOW_STYLE);
       if (key === 'detectedGpu') return Promise.resolve(MOCK_GPU_NAME);
     }),
-    setAsync: vi.fn().mockReturnValue(Promise.resolve(true)),
-  }),
+    setAsync: vi.fn(),
+  })),
 }));
 
 vi.mock('@/config/comfyServerConfig', () => ({
@@ -52,16 +52,10 @@ const getHandler = (channel: string) => {
 };
 
 describe('AppInfoHandlers', () => {
-  let appWindow: {
-    loadPage: Mock;
-    showOpenDialog: Mock;
-  };
-
   const testCases: TestCase[] = [
     { channel: IPC_CHANNELS.IS_PACKAGED, expected: false },
     { channel: IPC_CHANNELS.GET_ELECTRON_VERSION, expected: '1.0.0' },
     { channel: IPC_CHANNELS.GET_BASE_PATH, expected: MOCK_BASE_PATH },
-    { channel: IPC_CHANNELS.SET_BASE_PATH, expected: true, args: [null, MOCK_BASE_PATH] },
     { channel: IPC_CHANNELS.GET_GPU, expected: MOCK_GPU_NAME },
     { channel: IPC_CHANNELS.SET_WINDOW_STYLE, expected: undefined, args: [null, MOCK_WINDOW_STYLE] },
     { channel: IPC_CHANNELS.GET_WINDOW_STYLE, expected: MOCK_WINDOW_STYLE },
@@ -73,11 +67,7 @@ describe('AppInfoHandlers', () => {
 
   describe('registerHandlers', () => {
     beforeEach(() => {
-      appWindow = {
-        loadPage: vi.fn(),
-        showOpenDialog: vi.fn().mockReturnValue({ canceled: false, filePaths: [MOCK_BASE_PATH] }),
-      };
-      registerAppInfoHandlers(appWindow as any);
+      registerAppInfoHandlers();
     });
 
     it.each(testCases)('should register handler for $channel', ({ channel }) => {
@@ -93,19 +83,5 @@ describe('AppInfoHandlers', () => {
         expect(result).toEqual(expected);
       }
     );
-  });
-
-  describe('set-base-path', () => {
-    it('should return false when user cancels dialog', async () => {
-      appWindow = {
-        loadPage: vi.fn(),
-        showOpenDialog: vi.fn().mockReturnValue({ canceled: true, filePaths: [] }),
-      };
-      registerAppInfoHandlers(appWindow as any);
-
-      const result = await getHandler(IPC_CHANNELS.SET_BASE_PATH)(null, MOCK_BASE_PATH);
-
-      expect(result).toBe(false);
-    });
   });
 });

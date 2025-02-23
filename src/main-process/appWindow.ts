@@ -19,7 +19,7 @@ import { URL } from 'node:url';
 
 import { ElectronError } from '@/infrastructure/electronError';
 import type { Page } from '@/infrastructure/interfaces';
-import type { IAppState } from '@/main-process/appState';
+import { type IAppState, useAppState } from '@/main-process/appState';
 import { clamp } from '@/utils';
 
 import { IPC_CHANNELS, ProgressStatus, ServerArgs } from '../constants';
@@ -33,6 +33,7 @@ import { useDesktopConfig } from '../store/desktopConfig';
  * Closes the application when the window is closed.
  */
 export class AppWindow {
+  private readonly appState: IAppState = useAppState();
   private readonly window: BrowserWindow;
   /** Volatile store containing window config - saves window state between launches. */
   private readonly store: Store<AppWindowSettings>;
@@ -55,7 +56,7 @@ export class AppWindow {
     if (!app.isPackaged) return process.env.DEV_SERVER_URL;
   }
 
-  public constructor(private readonly appState: IAppState) {
+  public constructor() {
     const installed = useDesktopConfig().get('installState') === 'installed';
     const { workAreaSize } = screen.getPrimaryDisplay();
     const { width, height } = installed ? workAreaSize : { width: 1024, height: 768 };
@@ -97,6 +98,7 @@ export class AppWindow {
       minHeight: 640,
       x,
       y,
+      backgroundColor: '#171717',
       webPreferences: {
         // eslint-disable-next-line unicorn/prefer-module
         preload: path.join(__dirname, '../build/preload.cjs'),
@@ -132,17 +134,20 @@ export class AppWindow {
       this.messageQueue.push({ channel, data });
       return;
     }
+    const { webContents } = this.window;
 
     // Send queued messages first
     while (this.messageQueue.length > 0) {
       const message = this.messageQueue.shift();
-      if (message && this.window) {
-        this.window.webContents.send(message.channel, message.data);
+      if (message && !webContents.isDestroyed()) {
+        webContents.send(message.channel, message.data);
       }
     }
 
     // Send current message
-    this.window.webContents.send(channel, data);
+    if (!webContents.isDestroyed()) {
+      webContents.send(channel, data);
+    }
   }
 
   /**

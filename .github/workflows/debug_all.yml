@@ -9,11 +9,15 @@ on:
       - '.eslintrc.json'
       - '.prettierignore'
       - 'README.md'
-      - 'husky/**'
+      - '.husky/**'
       - '.vscode/**'
       - 'scripts/**'
       - '.gitignore'
       - 'todesktop.json'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.cursor/**'
+      - '*_example'
+      - 'tests/**'
   push:
     branches:
       - 'main'
@@ -22,11 +26,15 @@ on:
       - '.eslintrc.json'
       - '.prettierignore'
       - 'README.md'
-      - 'husky/**'
+      - '.husky/**'
       - '.vscode/**'
       - 'scripts/**'
       - '.gitignore'
       - 'todesktop.json'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.cursor/**'
+      - '*_example'
+      - 'tests/**'
 
 jobs:
   build-windows-debug-all:

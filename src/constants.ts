@@ -47,6 +47,7 @@ export const IPC_CHANNELS = {
   UV_CLEAR_CACHE: 'uv-clear-cache',
   UV_RESET_VENV: 'uv-delete-venv',
   CAN_ACCESS_URL: 'can-access-url',
+  START_TROUBLESHOOTING: 'start-troubleshooting',
 } as const;
 
 export enum ProgressStatus {
@@ -129,3 +130,6 @@ export enum DownloadStatus {
 export const CUDA_TORCH_URL = 'https://download.pytorch.org/whl/cu126';
 export const NIGHTLY_CPU_TORCH_URL = 'https://download.pytorch.org/whl/nightly/cpu';
 export const DEFAULT_PYPI_INDEX_URL = 'https://pypi.org/simple/';
+
+export const COMFYUI_LOG_FILENAME = 'comfyui.log';
+export const MAIN_LOG_FILENAME = 'main.log';

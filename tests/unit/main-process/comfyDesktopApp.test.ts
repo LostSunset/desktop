@@ -15,15 +15,15 @@ import { findAvailablePort, getModelsDirectory } from '@/utils';
 // Mock dependencies
 vi.mock('@/config/comfySettings', () => {
   const mockSettings = {
-    get: vi.fn().mockReturnValue(true),
+    get: vi.fn(() => true),
     set: vi.fn(),
     saveSettings: vi.fn(),
   };
   return {
     ComfySettings: {
-      load: vi.fn().mockResolvedValue(mockSettings),
+      load: vi.fn(() => Promise.resolve(mockSettings)),
     },
-    useComfySettings: vi.fn().mockReturnValue(mockSettings),
+    useComfySettings: vi.fn(() => mockSettings),
   };
 });
 
@@ -33,6 +33,7 @@ vi.mock('electron', () => ({
   },
   ipcMain: {
     handle: vi.fn(),
+    removeHandler: vi.fn(),
   },
 }));
 
@@ -62,7 +63,7 @@ const mockTerminal = {
   restore: vi.fn(),
 };
 vi.mock('@/shell/terminal', () => ({
-  Terminal: vi.fn().mockImplementation(() => mockTerminal),
+  Terminal: vi.fn(() => mockTerminal),
 }));
 
 vi.mock('@/main-process/comfyServer', () => ({
@@ -106,11 +107,9 @@ describe('ComfyDesktopApp', () => {
     comfyDesktopApp = new ComfyDesktopApp(mockInstallation, mockAppWindow, mockTelemetry);
   });
 
-  describe('initialize', () => {
+  describe('constructor', () => {
     it('should register IPC handlers and initialize todesktop', () => {
       mockComfySettings.get.mockReturnValue(true);
-
-      comfyDesktopApp.initialize();
 
       expect(ipcMain.handle).toHaveBeenCalledWith(IPC_CHANNELS.RESTART_CORE, expect.any(Function));
       expect(todesktop.init).toHaveBeenCalledWith({
@@ -261,7 +260,6 @@ describe('ComfyDesktopApp', () => {
   describe('IPC handlers', () => {
     describe('RESTART_CORE handler', () => {
       it('should return false if no server is running', async () => {
-        comfyDesktopApp.initialize();
         const restartHandler = vi
           .mocked(ipcMain.handle)
           .mock.calls.find((call) => call[0] === IPC_CHANNELS.RESTART_CORE)?.[1];
@@ -277,7 +275,6 @@ describe('ComfyDesktopApp', () => {
         };
         comfyDesktopApp.comfyServer = mockServer as any;
 
-        comfyDesktopApp.initialize();
         const restartHandler = vi
           .mocked(ipcMain.handle)
           .mock.calls.find((call) => call[0] === IPC_CHANNELS.RESTART_CORE)?.[1];

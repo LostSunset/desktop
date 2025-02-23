@@ -23,92 +23,100 @@ export interface DownloadState {
   isPaused: boolean;
 }
 
+interface DownloadReport {
+  url: string;
+  progress: number;
+  status: DownloadStatus;
+  filename: string;
+  savePath: string;
+  message?: string;
+}
+
 /**
  * Singleton class that manages downloading model checkpoints for ComfyUI.
  */
 export class DownloadManager {
   private static instance: DownloadManager;
   private readonly downloads: Map<string, Download>;
-  private readonly mainWindow: AppWindow;
-  private readonly modelsDirectory: string;
-  private constructor(mainWindow: AppWindow, modelsDirectory: string) {
+
+  private constructor(
+    private readonly mainWindow: AppWindow,
+    private readonly modelsDirectory: string
+  ) {
     this.downloads = new Map();
-    this.mainWindow = mainWindow;
-    this.modelsDirectory = modelsDirectory;
 
     session.defaultSession.on('will-download', (event, item) => {
       const url = item.getURLChain()[0]; // Get the original URL in case of redirects.
       log.info('Will-download event', url);
       const download = this.downloads.get(url);
+      if (!download) return;
 
-      if (download) {
-        this.reportProgress({
-          url,
-          filename: download.filename,
-          savePath: download.savePath,
-          progress: 0,
-          status: DownloadStatus.PENDING,
-        });
-        item.setSavePath(download.tempPath);
-        download.item = item;
-        log.info(`Setting save path to ${item.getSavePath()}`);
+      this.reportProgress({
+        url,
+        filename: download.filename,
+        savePath: download.savePath,
+        progress: 0,
+        status: DownloadStatus.PENDING,
+      });
+      item.setSavePath(download.tempPath);
+      download.item = item;
+      log.info(`Setting save path to ${item.getSavePath()}`);
 
-        item.on('updated', (event, state) => {
-          if (state === 'interrupted') {
-            log.info('Download is interrupted but can be resumed');
-          } else if (state === 'progressing') {
-            const progress = item.getReceivedBytes() / item.getTotalBytes();
-            if (item.isPaused()) {
-              log.info('Download is paused');
-              this.reportProgress({
-                url,
-                progress,
-                filename: download.filename,
-                savePath: download.savePath,
-                status: DownloadStatus.PAUSED,
-              });
-            } else {
-              this.reportProgress({
-                url,
-                progress,
-                filename: download.filename,
-                savePath: download.savePath,
-                status: DownloadStatus.IN_PROGRESS,
-              });
-            }
-          }
-        });
-
-        item.once('done', (event, state) => {
-          if (state === 'completed') {
-            try {
-              fs.renameSync(download.tempPath, download.savePath);
-              log.info(`Successfully renamed ${download.tempPath} to ${download.savePath}`);
-            } catch (error) {
-              log.error('Failed to rename downloaded file. Deleting temp file.', error);
-              fs.unlinkSync(download.tempPath);
-            }
+      item.on('updated', (event, state) => {
+        if (state === 'interrupted') {
+          log.info('Download is interrupted but can be resumed');
+        } else if (state === 'progressing') {
+          const progress = item.getReceivedBytes() / item.getTotalBytes();
+          if (item.isPaused()) {
+            log.info('Download is paused');
             this.reportProgress({
               url,
-              filename: download.filename,
-              savePath: download.savePath,
-              progress: 1,
-              status: DownloadStatus.COMPLETED,
-            });
-            this.downloads.delete(url);
-          } else {
-            log.info(`Download failed: ${state}`);
-            const progress = item.getReceivedBytes() / item.getTotalBytes();
-            this.reportProgress({
-              url,
-              filename: download.filename,
               progress,
-              status: DownloadStatus.ERROR,
+              filename: download.filename,
               savePath: download.savePath,
+              status: DownloadStatus.PAUSED,
+            });
+          } else {
+            this.reportProgress({
+              url,
+              progress,
+              filename: download.filename,
+              savePath: download.savePath,
+              status: DownloadStatus.IN_PROGRESS,
             });
           }
-        });
-      }
+        }
+      });
+
+      item.once('done', (event, state) => {
+        if (state === 'completed') {
+          try {
+            fs.renameSync(download.tempPath, download.savePath);
+            log.info(`Successfully renamed ${download.tempPath} to ${download.savePath}`);
+          } catch (error) {
+            log.error('Failed to rename downloaded file. Deleting temp file.', error);
+            fs.unlinkSync(download.tempPath);
+          }
+          this.reportProgress({
+            url,
+            filename: download.filename,
+            savePath: download.savePath,
+            progress: 1,
+            status: DownloadStatus.COMPLETED,
+          });
+          this.downloads.delete(url);
+        } else {
+          log.info(`Download failed: ${state}`);
+          const progress = item.getReceivedBytes() / item.getTotalBytes();
+          this.reportProgress({
+            url,
+            filename: download.filename,
+            progress,
+            status: DownloadStatus.ERROR,
+            savePath: download.savePath,
+          });
+        }
+      });
     });
   }
 
@@ -149,7 +157,7 @@ export class DownloadManager {
     const existingDownload = this.downloads.get(url);
     if (existingDownload) {
       log.info('Download already exists');
-      if (existingDownload.item && existingDownload.item.isPaused()) {
+      if (existingDownload.item?.isPaused()) {
         this.resumeDownload(url);
       }
       return true;
@@ -167,31 +175,31 @@ export class DownloadManager {
 
   cancelDownload(url: string): void {
     const download = this.downloads.get(url);
-    if (download && download.item) {
-      log.info('Cancelling download');
-      download.item.cancel();
+    if (!download?.item) return;
 
-      this.downloads.delete(url);
-    }
+    log.info('Cancelling download');
+    download.item.cancel();
+
+    this.downloads.delete(url);
   }
 
   pauseDownload(url: string): void {
     const download = this.downloads.get(url);
-    if (download && download.item) {
-      log.info('Pausing download');
-      download.item.pause();
-    }
+    if (!download?.item) return;
+
+    log.info('Pausing download');
+    download.item.pause();
   }
 
   resumeDownload(url: string): void {
     const download = this.downloads.get(url);
-    if (download) {
-      if (download.item && download.item.canResume()) {
-        log.info('Resuming download');
-        download.item.resume();
-      } else {
-        this.startDownload(download.url, download.savePath, download.filename);
-      }
+    if (!download?.item) return;
+
+    if (download.item.canResume()) {
+      log.info('Resuming download');
+      download.item.resume();
+    } else {
+      this.startDownload(download.url, download.savePath, download.filename);
     }
   }
 
@@ -285,30 +293,11 @@ export class DownloadManager {
     return absoluteFilePath.startsWith(absoluteModelsDir);
   }
 
-  private reportProgress({
-    url,
-    progress,
-    status,
-    savePath,
-    filename,
-    message = '',
-  }: {
-    url: string;
-    progress: number;
-    status: DownloadStatus;
-    filename: string;
-    savePath: string;
-    message?: string;
-  }): void {
-    log.info(`Download progress [${filename}]: ${progress}, status: ${status}, message: ${message}`);
-    this.mainWindow.send(IPC_CHANNELS.DOWNLOAD_PROGRESS, {
-      url,
-      progress,
-      status,
-      message,
-      savePath,
-      filename,
-    });
+  private reportProgress(report: DownloadReport): void {
+    log.info(
+      `Download progress [${report.filename}]: ${report.progress}, status: ${report.status}, message: ${report.message}`
+    );
+    this.mainWindow.send(IPC_CHANNELS.DOWNLOAD_PROGRESS, { ...report });
   }
 
   public static getInstance(mainWindow: AppWindow, modelsDirectory: string): DownloadManager {

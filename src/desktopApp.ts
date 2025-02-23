@@ -1,4 +1,4 @@
-import { app, dialog } from 'electron';
+import { app, dialog, ipcMain } from 'electron';
 import log from 'electron-log/main';
 
 import { ProgressStatus } from './constants';
@@ -7,9 +7,12 @@ import { registerAppHandlers } from './handlers/AppHandlers';
 import { registerAppInfoHandlers } from './handlers/appInfoHandlers';
 import { registerNetworkHandlers } from './handlers/networkHandlers';
 import { registerPathHandlers } from './handlers/pathHandlers';
+import { FatalError } from './infrastructure/fatalError';
 import type { FatalErrorOptions } from './infrastructure/interfaces';
 import { InstallationManager } from './install/installationManager';
+import { Troubleshooting } from './install/troubleshooting';
 import type { IAppState } from './main-process/appState';
+import { useAppState } from './main-process/appState';
 import { AppWindow } from './main-process/appWindow';
 import { ComfyDesktopApp } from './main-process/comfyDesktopApp';
 import type { ComfyInstallation } from './main-process/comfyInstallation';
@@ -20,15 +23,16 @@ import { DesktopConfig } from './store/desktopConfig';
 
 export class DesktopApp implements HasTelemetry {
   readonly telemetry: ITelemetry = getTelemetry();
-  readonly appWindow: AppWindow;
+  readonly appState: IAppState = useAppState();
+  readonly appWindow: AppWindow = new AppWindow();
+
+  comfyDesktopApp?: ComfyDesktopApp;
+  installation?: ComfyInstallation;
 
   constructor(
-    private readonly appState: IAppState,
     private readonly overrides: DevOverrides,
     private readonly config: DesktopConfig
-  ) {
-    this.appWindow = new AppWindow(appState);
-  }
+  ) {}
 
   /** Load start screen - basic spinner */
   async showLoadingPage() {
@@ -54,7 +58,7 @@ export class DesktopApp implements HasTelemetry {
 
   /**
    * Install / validate installation is complete
-   * @returns The installation if it is complete, otherwise `undefined`.
+   * @returns The installation if it is complete, otherwise `undefined` (error page).
    * @throws Rethrows any errors when the installation fails before the app has set the current page.
    */
   private async initializeInstallation(): Promise<ComfyInstallation | undefined> {
@@ -74,26 +78,27 @@ export class DesktopApp implements HasTelemetry {
   }
 
   async start(): Promise<void> {
-    const { appWindow, overrides, telemetry } = this;
+    const { appState, appWindow, overrides, telemetry } = this;
 
-    this.registerIpcHandlers();
+    if (!appState.ipcRegistered) this.registerIpcHandlers();
 
     const installation = await this.initializeInstallation();
     if (!installation) return;
+    this.installation = installation;
 
     // At this point, user has gone through the onboarding flow.
     await this.initializeTelemetry(installation);
 
     try {
       // Initialize app
-      const comfyDesktopApp = new ComfyDesktopApp(installation, appWindow, telemetry);
-      comfyDesktopApp.initialize();
+      this.comfyDesktopApp ??= new ComfyDesktopApp(installation, appWindow, telemetry);
+      const { comfyDesktopApp } = this;
 
       // Construct core launch args
       const serverArgs = await comfyDesktopApp.buildServerArgs(overrides);
 
       // Start server
-      if (!overrides.useExternalServer) {
+      if (!overrides.useExternalServer && !comfyDesktopApp.serverRunning) {
         try {
           await comfyDesktopApp.startComfyServer(serverArgs);
         } catch (error) {
@@ -105,6 +110,9 @@ export class DesktopApp implements HasTelemetry {
       }
       appWindow.sendServerStartProgress(ProgressStatus.READY);
       await appWindow.loadComfyUI(serverArgs);
+
+      // App start complete
+      appState.emitLoaded();
     } catch (error) {
       log.error('Unhandled exception during app startup', error);
       appWindow.sendServerStartProgress(ProgressStatus.ERROR);
@@ -119,13 +127,17 @@ export class DesktopApp implements HasTelemetry {
     }
   }
 
-  registerIpcHandlers() {
+  private registerIpcHandlers() {
+    this.appState.emitIpcRegistered();
+
     try {
       // Register basic handlers that are necessary during app's installation.
       registerPathHandlers();
       registerNetworkHandlers();
-      registerAppInfoHandlers(this.appWindow);
+      registerAppInfoHandlers();
       registerAppHandlers();
+
+      ipcMain.handle(IPC_CHANNELS.START_TROUBLESHOOTING, async () => await this.showTroubleshootingPage());
     } catch (error) {
       DesktopApp.fatalError({
         error,
@@ -136,6 +148,28 @@ export class DesktopApp implements HasTelemetry {
     }
   }
 
+  async showTroubleshootingPage() {
+    try {
+      if (!this.installation) throw new Error('Cannot troubleshoot before installation is complete.');
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      using troubleshooting = new Troubleshooting(this.installation, this.appWindow);
+
+      if (!this.appState.loaded) {
+        await this.appWindow.loadPage('maintenance');
+      }
+      await new Promise((resolve) => ipcMain.handleOnce(IPC_CHANNELS.COMPLETE_VALIDATION, resolve));
+    } catch (error) {
+      DesktopApp.fatalError({
+        error,
+        message: `An error was detected, but the troubleshooting page could not be loaded. The app will close now. Please reinstall if this issue persists.`,
+        title: 'Critical error',
+        exitCode: 2001,
+      });
+    }
+
+    await this.start();
+  }
+
   /**
    * Quits the app gracefully after a fatal error.  Exits immediately if a code is provided.
    *
@@ -143,13 +177,13 @@ export class DesktopApp implements HasTelemetry {
    * @param options - The options for the error.
    */
   static fatalError({ message, error, title, logMessage, exitCode }: FatalErrorOptions): never {
-    const _error = error ?? new Error(message);
+    const _error = FatalError.wrapIfGeneric(error);
     log.error(logMessage ?? message, _error);
     if (title && message) dialog.showErrorBox(title, message);
 
     if (exitCode) app.exit(exitCode);
     else app.quit();
     // Unreachable - library type is void instead of never.
-    throw new Error(message, { cause: _error });
+    throw _error;
   }
 }

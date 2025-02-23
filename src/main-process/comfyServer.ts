@@ -8,13 +8,22 @@ import { removeAnsiCodesTransform } from '@/infrastructure/structuredLogging';
 
 import { ComfyServerConfig } from '../config/comfyServerConfig';
 import { ComfySettings } from '../config/comfySettings';
-import { IPC_CHANNELS, ServerArgs } from '../constants';
+import { COMFYUI_LOG_FILENAME, IPC_CHANNELS, ServerArgs } from '../constants';
 import { getAppResourcesPath } from '../install/resourcePaths';
 import { HasTelemetry, ITelemetry, trackEvent } from '../services/telemetry';
 import { rotateLogFiles } from '../utils';
 import { VirtualEnvironment } from '../virtualEnvironment';
 import { AppWindow } from './appWindow';
 
+/**
+ * A class that manages the ComfyUI server.
+ *
+ * This class is responsible for starting and stopping the ComfyUI server,
+ * as well as handling the server's lifecycle events.
+ *
+ * isRunning: The server process is running.
+ * timedOutWhilstStarting: The server process failed to start within the timeout. The process may still be running.
+ */
 export class ComfyServer implements HasTelemetry {
   /**
    * The maximum amount of time to wait for the server to start.
@@ -28,45 +37,43 @@ export class ComfyServer implements HasTelemetry {
    */
   public static readonly CHECK_INTERVAL = 1000; // Check every second
 
-  private comfyServerProcess: ChildProcess | null = null;
-
-  constructor(
-    public basePath: string,
-    public serverArgs: ServerArgs,
-    public virtualEnvironment: VirtualEnvironment,
-    public appWindow: AppWindow,
-    readonly telemetry: ITelemetry
-  ) {}
-
-  get baseUrl() {
-    return `http://${this.serverArgs.listen}:${this.serverArgs.port}`;
-  }
-
-  /**
-   * The path to the ComfyUI main python script.
-   */
-  get mainScriptPath() {
-    return path.join(getAppResourcesPath(), 'ComfyUI', 'main.py');
-  }
+  /** The path to the ComfyUI main python script. */
+  readonly mainScriptPath = path.join(getAppResourcesPath(), 'ComfyUI', 'main.py');
 
   /**
    * The path to the ComfyUI web root. This directory should host compiled
    * ComfyUI web assets.
    */
-  get webRootPath() {
-    return path.join(getAppResourcesPath(), 'ComfyUI', 'web_custom_versions', 'desktop_app');
+  readonly webRootPath = path.join(getAppResourcesPath(), 'ComfyUI', 'web_custom_versions', 'desktop_app');
+
+  readonly userDirectoryPath: string;
+  readonly inputDirectoryPath: string;
+  readonly outputDirectoryPath: string;
+
+  /** Whether the server failed to report started within the start timeout. */
+  timedOutWhilstStarting = false;
+
+  private comfyServerProcess: ChildProcess | null = null;
+
+  constructor(
+    readonly basePath: string,
+    readonly serverArgs: ServerArgs,
+    readonly virtualEnvironment: VirtualEnvironment,
+    readonly appWindow: AppWindow,
+    readonly telemetry: ITelemetry
+  ) {
+    this.userDirectoryPath = path.join(this.basePath, 'user');
+    this.inputDirectoryPath = path.join(this.basePath, 'input');
+    this.outputDirectoryPath = path.join(this.basePath, 'output');
   }
 
-  get userDirectoryPath() {
-    return path.join(this.basePath, 'user');
+  /** Whether the server is expected to be running. */
+  get isRunning() {
+    return !!this.comfyServerProcess;
   }
 
-  get inputDirectoryPath() {
-    return path.join(this.basePath, 'input');
-  }
-
-  get outputDirectoryPath() {
-    return path.join(this.basePath, 'output');
+  get baseUrl() {
+    return `http://${this.serverArgs.listen}:${this.serverArgs.port}`;
   }
 
   /**
@@ -81,37 +88,48 @@ export class ComfyServer implements HasTelemetry {
       'front-end-root': this.webRootPath,
       'base-directory': this.basePath,
       'extra-model-paths-config': ComfyServerConfig.configPath,
+      'log-stdout': '',
     };
   }
 
-  static buildLaunchArgs(mainScriptPath: string, args: Record<string, string>) {
-    return [
-      mainScriptPath,
-      ...Object.entries(args)
-        .flatMap(([key, value]) => [`--${key}`, value])
-        // Empty string values are ignored. e.g. { cpu: '' } => '--cpu'
-        .filter((value: string) => value !== ''),
-    ];
+  /**
+   * Builds CLI arguments from an object of key-value pairs.
+   * @param args Object key-value pairs of CLI arguments.
+   * @returns A string array of CLI arguments.
+   */
+  static buildLaunchArgs(args: Record<string, string>) {
+    // Empty string values are ignored. e.g. { cpu: '' } => '--cpu'
+    return Object.entries(args)
+      .flatMap(([key, value]) => [`--${key}`, value])
+      .filter((value) => value !== '');
   }
 
   get launchArgs() {
-    return ComfyServer.buildLaunchArgs(this.mainScriptPath, {
+    const args = ComfyServer.buildLaunchArgs({
       ...this.coreLaunchArgs,
       ...this.serverArgs,
     });
+    return [this.mainScriptPath, ...args];
   }
 
   @trackEvent('comfyui:server_start')
   async start() {
+    if (this.isRunning) {
+      const message = 'ComfyUI server is already running';
+      log.error(message);
+      throw new Error(message);
+    }
+
     ComfySettings.lockWrites();
     await ComfyServerConfig.addAppBundledCustomNodesToConfig();
     await rotateLogFiles(app.getPath('logs'), 'comfyui', 50);
     return new Promise<void>((resolve, reject) => {
       const comfyUILog = log.create({ logId: 'comfyui' });
-      comfyUILog.transports.file.fileName = 'comfyui.log';
+      comfyUILog.transports.file.fileName = COMFYUI_LOG_FILENAME;
 
       comfyUILog.transports.file.transforms.unshift(removeAnsiCodesTransform);
 
+      this.timedOutWhilstStarting = false;
       const comfyServerProcess = this.virtualEnvironment.runPythonCommand(this.launchArgs, {
         onStdout: (data) => {
           comfyUILog.info(data);
@@ -123,17 +141,20 @@ export class ComfyServer implements HasTelemetry {
         },
       });
 
-      comfyServerProcess.on('error', (err) => {
+      const rejectOnError = (err: Error) => {
+        this.comfyServerProcess = null;
         log.error('Failed to start ComfyUI:', err);
         reject(err);
-      });
+      };
+      comfyServerProcess.on('error', rejectOnError);
 
       comfyServerProcess.on('exit', (code, signal) => {
+        this.comfyServerProcess = null;
         if (code !== 0) {
           log.error(`Python process exited with code ${code} and signal ${signal}`);
           reject(new Error(`Python process exited with code ${code} and signal ${signal}`));
         } else {
-          log.info(`Python process exited successfully with code ${code}`);
+          log.info(`Python process exited successfully`);
           resolve();
         }
       });
@@ -147,11 +168,13 @@ export class ComfyServer implements HasTelemetry {
       })
         .then(() => {
           log.info('Python server is ready');
+          comfyServerProcess.off('error', rejectOnError);
           resolve();
         })
         .catch((error) => {
-          log.error('Server failed to start:', error);
-          reject(new Error('Python Server Failed To Start Within Timeout.'));
+          this.timedOutWhilstStarting = true;
+          log.error('Server failed to start within timeout:', error);
+          reject(new Error('Python server failed to start within timeout.'));
         });
     });
   }
@@ -171,10 +194,8 @@ export class ComfyServer implements HasTelemetry {
       }, 10_000);
 
       // Listen for the 'exit' event
-      this.comfyServerProcess.once('exit', (code, signal) => {
+      this.comfyServerProcess.once('exit', () => {
         clearTimeout(timeout);
-        log.info(`Python server exited with code ${code} and signal ${signal}`);
-        this.comfyServerProcess = null;
         resolve();
       });
 

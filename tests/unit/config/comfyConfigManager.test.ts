@@ -86,6 +86,62 @@ describe('ComfyConfigManager', () => {
       expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/custom_nodes'), { recursive: true });
     });
 
+    it('should create full directory structure including all model subdirectories', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+
+      ComfyConfigManager.createComfyDirectories('/fake/path/ComfyUI');
+
+      // Verify model subdirectories are created
+      const expectedModelDirs = [
+        'checkpoints',
+        'clip',
+        'clip_vision',
+        'configs',
+        'controlnet',
+        'diffusers',
+        'diffusion_models',
+        'embeddings',
+        'gligen',
+        'hypernetworks',
+        'loras',
+        'photomaker',
+        'style_models',
+        'unet',
+        'upscale_models',
+        'vae',
+        'vae_approx',
+        'animatediff_models',
+        'animatediff_motion_lora',
+        'animatediff_video_formats',
+        'liveportrait',
+        'CogVideo',
+        'layerstyle',
+        'LLM',
+        'Joy_caption',
+      ];
+
+      for (const dir of expectedModelDirs) {
+        expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize(`/fake/path/ComfyUI/models/${dir}`), {
+          recursive: true,
+        });
+      }
+
+      // Verify nested subdirectories
+      expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/user/default'), { recursive: true });
+      expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/models/insightface/buffalo_1'), {
+        recursive: true,
+      });
+      expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/models/blip/checkpoints'), {
+        recursive: true,
+      });
+      expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/models/xlabs/loras'), {
+        recursive: true,
+      });
+      expect(fs.mkdirSync).toHaveBeenCalledWith(path.normalize('/fake/path/ComfyUI/models/xlabs/controlnets'), {
+        recursive: true,
+      });
+    });
+
     it('should catch and log errors when creating directories', () => {
       vi.mocked(fs.mkdirSync).mockImplementationOnce(() => {
         throw new Error('Permission denied');
@@ -104,7 +160,7 @@ describe('ComfyConfigManager', () => {
 
       const structure = ['dir1', ['dir2', ['subdir1', 'subdir2']], ['dir3', [['subdir3', ['subsubdir1']]]]];
 
-      ComfyConfigManager['createNestedDirectories']('/fake/path', structure);
+      ComfyConfigManager.createNestedDirectories('/fake/path', structure);
 
       // Verify the correct paths were created
       expect(fs.mkdirSync).toHaveBeenCalledWith(expect.stringContaining('dir1'), expect.any(Object));
@@ -120,11 +176,29 @@ describe('ComfyConfigManager', () => {
         [123, ['subdir1']], // Invalid: non-string directory name
       ];
 
-      ComfyConfigManager['createNestedDirectories']('/fake/path', invalidStructure as DirectoryStructure);
+      ComfyConfigManager.createNestedDirectories('/fake/path', invalidStructure as DirectoryStructure);
 
       // Verify only valid directories were created
       expect(fs.mkdirSync).toHaveBeenCalledWith(expect.stringContaining('dir1'), expect.any(Object));
       expect(fs.mkdirSync).not.toHaveBeenCalledWith(expect.stringContaining('subdir1'), expect.any(Object));
+    });
+  });
+
+  describe('createDirIfNotExists', () => {
+    it('should create directory when it does not exist', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false);
+
+      ComfyConfigManager.createDirIfNotExists('/fake/path/newdir');
+
+      expect(fs.mkdirSync).toHaveBeenCalledWith('/fake/path/newdir', { recursive: true });
+    });
+
+    it('should not create directory when it already exists', () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+
+      ComfyConfigManager.createDirIfNotExists('/fake/path/existingdir');
+
+      expect(fs.mkdirSync).not.toHaveBeenCalled();
     });
   });
 });

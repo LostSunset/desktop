@@ -1,5 +1,5 @@
-import { type ElectronApplication } from '@playwright/test';
-import electronPath from 'electron';
+import { type ElectronApplication, type JSHandle } from '@playwright/test';
+import electronPath, { type BrowserWindow } from 'electron';
 import { _electron as electron } from 'playwright';
 
 import { TestEnvironment } from './testEnvironment';
@@ -42,6 +42,23 @@ export class TestApp implements AsyncDisposable {
     return await this.app.firstWindow();
   }
 
+  async browserWindow(): Promise<JSHandle<BrowserWindow>> {
+    const windows = this.app.windows();
+    if (windows.length === 0) throw new Error('No windows found');
+
+    return await this.app.browserWindow(windows[0]);
+  }
+
+  async isMaximized() {
+    const window = await this.browserWindow();
+    return window.evaluate((window) => window.isMaximized());
+  }
+
+  async restoreWindow() {
+    const window = await this.browserWindow();
+    await window.evaluate((window) => window.restore());
+  }
+
   /** Executes the Electron app. If not in CI, logs browser console via `console.log()`. */
   protected static async launchElectron() {
     const app = await electron.launch({
@@ -80,5 +97,7 @@ export class TestApp implements AsyncDisposable {
 
     await this.close();
     if (this.shouldDisposeTestEnvironment) await this.testEnvironment.deleteEverything();
+
+    await this.testEnvironment[Symbol.asyncDispose]();
   }
 }

@@ -35,19 +35,19 @@ vi.mock('electron', () => ({
 }));
 
 vi.mock('electron-store', () => ({
-  default: vi.fn().mockImplementation(() => ({
+  default: vi.fn(() => ({
     get: vi.fn(),
     set: vi.fn(),
   })),
 }));
 
 vi.mock('@/store/desktopConfig', () => ({
-  useDesktopConfig: vi.fn().mockReturnValue({
-    get: vi.fn().mockImplementation((key) => {
+  useDesktopConfig: vi.fn(() => ({
+    get: vi.fn((key: string) => {
       if (key === 'installState') return 'installed';
     }),
-    set: vi.fn().mockReturnValue(true),
-  }),
+    set: vi.fn(),
+  })),
 }));
 
 describe('AppWindow.isOnPage', () => {
@@ -69,7 +69,7 @@ describe('AppWindow.isOnPage', () => {
         }) as unknown as BrowserWindow
     );
 
-    appWindow = new AppWindow(null!);
+    appWindow = new AppWindow();
   });
 
   it('should handle file protocol URLs with hash correctly', () => {

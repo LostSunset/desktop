@@ -28,7 +28,7 @@ interface PipInstallConfig {
   indexStrategy?: 'compatible' | 'unsafe-best-match';
 }
 
-export function getPipInstallArgs(config: PipInstallConfig): string[] {
+function getPipInstallArgs(config: PipInstallConfig): string[] {
   const installArgs = ['pip', 'install'];
 
   if (config.upgradePackages) {
@@ -120,8 +120,10 @@ export class VirtualEnvironment implements HasTelemetry {
     };
 
     if (!this.uvPty) {
+      const debugging = process.env.NODE_DEBUG === 'true';
       const shell = getDefaultShell();
       this.uvPty = pty.spawn(shell, getDefaultShellArgs(), {
+        useConpty: !debugging,
         handleFlowControl: false,
         conptyInheritCursor: false,
         name: 'xterm',
@@ -262,8 +264,12 @@ export class VirtualEnvironment implements HasTelemetry {
       });
       log.info('Successfully created virtual environment at', this.venvPath);
     } catch (error) {
-      const sentryUrl = captureSentryException(error instanceof Error ? error : new Error(String(error)));
-      this.telemetry.track('install_flow:virtual_environment_create_error', {
+      const errorEventName = 'install_flow:virtual_environment_create_error';
+      const sentryUrl = captureSentryException(
+        error instanceof Error ? error : new Error(String(error)),
+        errorEventName
+      );
+      this.telemetry.track(errorEventName, {
         error_name: error instanceof Error ? error.name : 'UnknownError',
         error_type: error instanceof Error ? error.constructor.name : typeof error,
         error_message: error instanceof Error ? error.message : 'Unknown error occurred',
@@ -570,8 +576,12 @@ export class VirtualEnvironment implements HasTelemetry {
     return coreOk && managerOk ? 'OK' : 'error';
   }
 
-  async clearUvCache(): Promise<boolean> {
-    return await this.#rmdir(this.cacheDir, 'uv cache');
+  async clearUvCache(onData: ((data: string) => void) | undefined): Promise<boolean> {
+    const callbacks = { onStdout: onData };
+    const args = ['cache', 'clean'];
+    const { exitCode } = await this.runUvCommandAsync(args, callbacks);
+    if (exitCode !== 0) log.error('Failed to clear uv cache: exit code', exitCode);
+    return exitCode === 0;
   }
 
   async removeVenvDirectory(): Promise<boolean> {
