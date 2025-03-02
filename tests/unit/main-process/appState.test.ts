@@ -6,20 +6,12 @@ import type { Page } from '@/infrastructure/interfaces';
 // Clear global mock
 vi.unmock('@/main-process/appState');
 
-// Mock electron app
-vi.mock('electron', () => ({
-  app: {
-    once: vi.fn(),
-  },
-}));
-
 type AppStateModule = typeof import('@/main-process/appState');
 
 const test = baseTest.extend<AppStateModule & { imported: AppStateModule }>({
   imported: async ({}, use) => {
     const imported = await import('@/main-process/appState');
     await use(imported);
-    vi.clearAllMocks();
     vi.resetModules();
   },
   initializeAppState: async ({ imported }, use) => {

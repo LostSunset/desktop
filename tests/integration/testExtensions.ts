@@ -55,15 +55,17 @@ export const test = baseTest.extend<DesktopTestOptions & DesktopTestFixtures>({
   // Fixtures
   app: async ({ disposeTestEnvironment }, use, testInfo) => {
     // Launch Electron app.
-    await using app = await TestApp.create();
+    await using app = await TestApp.create(testInfo);
     app.shouldDisposeTestEnvironment = disposeTestEnvironment;
     await use(app);
 
-    if (!disposeTestEnvironment) return;
-
     // Attach logs after test
-    await attachIfExists(testInfo, app.testEnvironment.mainLogPath);
-    await attachIfExists(testInfo, app.testEnvironment.comfyuiLogPath);
+    const testEnv = app.testEnvironment;
+    await attachIfExists(testInfo, testEnv.mainLogPath);
+    await attachIfExists(testInfo, testEnv.comfyuiLogPath);
+
+    // Delete logs if present
+    await testEnv.deleteLogsIfPresent();
   },
   window: async ({ app }, use, testInfo) => {
     const window = await app.firstWindow();

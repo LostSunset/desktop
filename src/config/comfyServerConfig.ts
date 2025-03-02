@@ -22,6 +22,7 @@ const knownModelKeys = [
   'loras',
   'photomaker',
   'style_models',
+  'text_encoders',
   'unet',
   'upscale_models',
   'vae',

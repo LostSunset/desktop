@@ -26,6 +26,7 @@ export class ComfyConfigManager {
         'loras',
         'photomaker',
         'style_models',
+        'text_encoders',
         'unet',
         'upscale_models',
         'vae',

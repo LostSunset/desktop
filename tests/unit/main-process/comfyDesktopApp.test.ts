@@ -27,16 +27,6 @@ vi.mock('@/config/comfySettings', () => {
   };
 });
 
-vi.mock('electron', () => ({
-  app: {
-    on: vi.fn(),
-  },
-  ipcMain: {
-    handle: vi.fn(),
-    removeHandler: vi.fn(),
-  },
-}));
-
 vi.mock('@todesktop/runtime', () => ({
   default: {
     init: vi.fn(),
@@ -79,8 +69,6 @@ describe('ComfyDesktopApp', () => {
   let mockVirtualEnvironment: any;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-
     mockComfySettings = {
       get: vi.fn(),
     };
@@ -123,7 +111,6 @@ describe('ComfyDesktopApp', () => {
 
   describe('buildServerArgs', () => {
     beforeEach(() => {
-      vi.clearAllMocks();
       mockComfySettings.get.mockReturnValue({});
       vi.mocked(findAvailablePort).mockResolvedValue(8188);
     });

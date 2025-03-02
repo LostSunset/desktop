@@ -18,20 +18,6 @@ vi.mock('@sentry/electron/main', () => ({
   setContext: vi.fn(),
 }));
 
-vi.mock('electron', () => ({
-  app: {
-    getPath: vi.fn(() => '/mock/user/data'),
-    isPackaged: true,
-    getVersion: vi.fn(() => '1.0.0'),
-  },
-  ipcMain: {
-    on: vi.fn(),
-    once: vi.fn(),
-    handleOnce: vi.fn(),
-    removeHandler: vi.fn(),
-  },
-}));
-
 vi.mock('node:fs', () => {
   const mockFs = {
     existsSync: vi.fn(),
@@ -64,15 +50,7 @@ vi.mock('@/config/comfySettings', () => {
   };
 });
 
-vi.mock('mixpanel', () => ({
-  default: {
-    init: vi.fn(),
-    track: vi.fn(),
-    people: {
-      increment: vi.fn(),
-    },
-  },
-}));
+vi.mock('mixpanel');
 
 const config = {
   get: vi.fn(() => '/mock/path'),
@@ -97,7 +75,6 @@ describe('MixpanelTelemetry', () => {
   };
 
   beforeEach(async () => {
-    vi.clearAllMocks();
     // Initialize settings before each test
     await ComfySettings.load('/mock/path');
   });
@@ -108,7 +85,7 @@ describe('MixpanelTelemetry', () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue(existingId);
       telemetry = new MixpanelTelemetry(mockMixpanelClient as any);
-      expect(fs.readFileSync).toHaveBeenCalledWith(path.join('/mock/user/data', 'telemetry.txt'), 'utf8');
+      expect(fs.readFileSync).toHaveBeenCalledWith(path.join('/mock/app/path', 'telemetry.txt'), 'utf8');
       expect(fs.writeFileSync).not.toHaveBeenCalled();
     });
 
@@ -254,7 +231,6 @@ describe('promptMetricsConsent', () => {
   const versionAfterUpdate = '1.0.1';
 
   beforeEach(async () => {
-    vi.clearAllMocks();
     store = { get: vi.fn(), set: vi.fn() };
     appWindow = { loadPage: vi.fn() };
     // Initialize settings before each test

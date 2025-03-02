@@ -6,7 +6,7 @@ import { rm } from 'node:fs/promises';
 import os, { EOL } from 'node:os';
 import path from 'node:path';
 
-import { CUDA_TORCH_URL, DEFAULT_PYPI_INDEX_URL, NIGHTLY_CPU_TORCH_URL } from './constants';
+import { TorchMirrorUrl } from './constants';
 import type { TorchDeviceType } from './preload';
 import { captureSentryException } from './services/sentry';
 import { HasTelemetry, ITelemetry, trackEvent } from './services/telemetry';
@@ -69,19 +69,19 @@ function getDefaultTorchMirror(device: TorchDeviceType): string {
   log.debug('Falling back to default torch mirror');
   switch (device) {
     case 'mps':
-      return NIGHTLY_CPU_TORCH_URL;
+      return TorchMirrorUrl.NightlyCpu;
     case 'nvidia':
-      return CUDA_TORCH_URL;
+      return TorchMirrorUrl.Cuda;
     default:
-      return DEFAULT_PYPI_INDEX_URL;
+      return TorchMirrorUrl.Default;
   }
 }
 
 /** Disallows using the default mirror (CPU torch) when the selected device is not CPU. */
 function fixDeviceMirrorMismatch(device: TorchDeviceType, mirror: string | undefined) {
-  if (mirror === DEFAULT_PYPI_INDEX_URL) {
-    if (device === 'nvidia') return CUDA_TORCH_URL;
-    else if (device === 'mps') return NIGHTLY_CPU_TORCH_URL;
+  if (mirror === TorchMirrorUrl.Default) {
+    if (device === 'nvidia') return TorchMirrorUrl.Cuda;
+    else if (device === 'mps') return TorchMirrorUrl.NightlyCpu;
   }
   return mirror;
 }
@@ -493,7 +493,7 @@ export class VirtualEnvironment implements HasTelemetry {
     }
   }
 
-  private async installComfyUIRequirements(callbacks?: ProcessCallbacks): Promise<void> {
+  async installComfyUIRequirements(callbacks?: ProcessCallbacks): Promise<void> {
     log.info(`Installing ComfyUI requirements from ${this.comfyUIRequirementsPath}`);
     const installCmd = getPipInstallArgs({
       requirementsFile: this.comfyUIRequirementsPath,
@@ -531,7 +531,7 @@ export class VirtualEnvironment implements HasTelemetry {
    * `'manager-upgrade'` if `uv` and `toml` are missing,
    * or `'error'` when any other combination of packages are missing.
    */
-  async hasRequirements(): Promise<'OK' | 'error' | 'manager-upgrade'> {
+  async hasRequirements(): Promise<'OK' | 'error' | 'package-upgrade'> {
     const checkRequirements = async (requirementsPath: string) => {
       const args = ['pip', 'install', '--dry-run', '-r', requirementsPath];
       log.info(`Running direct process command: ${args.join(' ')}`);
@@ -557,9 +557,28 @@ export class VirtualEnvironment implements HasTelemetry {
       return venvOk;
     };
 
-    // Manager upgrade in 0.4.18
+    // Manager upgrade in 0.4.18 - uv, toml (exactly)
     const isManagerUpgrade = (output: string) => {
-      return output.search(/\bWould install 2 packages(\s+\+ (toml|uv)==[\d.]+){2}\s*$/) !== -1;
+      // Match the original case: 2 packages (uv + toml) | Added in https://github.com/ltdrdata/ComfyUI-Manager/commit/816a53a7b1a057af373c458ebf80aaae565b996b
+      // Match the new case: 1 package (chardet) | Added in https://github.com/ltdrdata/ComfyUI-Manager/commit/60a5e4f2614c688b41a1ebaf0694953eb26db38a
+      const anyCombination = /\bWould install [1-3] packages(\s+\+ (toml|uv|chardet)==[\d.]+){1,3}\s*$/;
+      return anyCombination.test(output);
+    };
+
+    // Package upgrade in 0.4.21 - aiohttp, av, yarl
+    const isCoreUpgrade = (output: string) => {
+      const lines = output.split('\n');
+      let adds = 0;
+      for (const line of lines) {
+        // Reject upgrade if removing an unrecognised package
+        if (line.search(/^\s*- (?!aiohttp|av|yarl).*==/) !== -1) return false;
+        if (line.search(/^\s*\+ /) !== -1) {
+          if (line.search(/^\s*\+ (aiohttp|av|yarl)==/) === -1) return false;
+          adds++;
+        }
+        // An unexpected package means this is not a package upgrade
+      }
+      return adds > 0;
     };
 
     const coreOutput = await checkRequirements(this.comfyUIRequirementsPath);
@@ -568,9 +587,12 @@ export class VirtualEnvironment implements HasTelemetry {
     const coreOk = hasAllPackages(coreOutput);
     const managerOk = hasAllPackages(managerOutput);
 
-    if (coreOk && isManagerUpgrade(managerOutput)) {
-      log.info('ComfyUI-Manager requires toml and uv. Installing.');
-      return 'manager-upgrade';
+    const upgradeCore = !coreOk && isCoreUpgrade(coreOutput);
+    const upgradeManager = !managerOk && isManagerUpgrade(managerOutput);
+
+    if ((managerOk && upgradeCore) || (coreOk && upgradeManager) || (upgradeCore && upgradeManager)) {
+      log.info('Package update of known packages required. Core:', upgradeCore, 'Manager:', upgradeManager);
+      return 'package-upgrade';
     }
 
     return coreOk && managerOk ? 'OK' : 'error';

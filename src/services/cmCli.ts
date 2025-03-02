@@ -1,6 +1,9 @@
 import log from 'electron-log/main';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileSync } from 'tmp';
+
+import { pathAccessible } from '@/utils';
 
 import { getAppResourcesPath } from '../install/resourcePaths';
 import { ProcessCallbacks, VirtualEnvironment } from '../virtualEnvironment';
@@ -8,7 +11,6 @@ import { HasTelemetry, ITelemetry, trackEvent } from './telemetry';
 
 export class CmCli implements HasTelemetry {
   private readonly cliPath: string;
-
   constructor(
     private readonly virtualEnvironment: VirtualEnvironment,
     readonly telemetry: ITelemetry
@@ -25,6 +27,10 @@ export class CmCli implements HasTelemetry {
   ) {
     let output = '';
     let error = '';
+    const ENV = {
+      COMFYUI_PATH: this.virtualEnvironment.basePath,
+      ...env,
+    };
     const { exitCode } = await this.virtualEnvironment.runPythonCommandAsync(
       [this.cliPath, ...args],
       {
@@ -38,10 +44,7 @@ export class CmCli implements HasTelemetry {
           callbacks?.onStderr?.(message);
         },
       },
-      {
-        COMFYUI_PATH: this.virtualEnvironment.basePath,
-        ...env,
-      },
+      ENV,
       cwd
     );
 
@@ -58,7 +61,14 @@ export class CmCli implements HasTelemetry {
     try {
       log.debug('Using temp file:', tmpFile.name);
       await this.saveSnapshot(fromComfyDir, tmpFile.name, callbacks);
-      await this.restoreSnapshot(tmpFile.name, callbacks);
+      await this.restoreSnapshot(tmpFile.name, path.join(this.virtualEnvironment.basePath, 'custom_nodes'), callbacks);
+
+      // Remove extra ComfyUI-Manager directory that was created by the migration.
+      const managerPath = path.join(this.virtualEnvironment.basePath, 'custom_nodes', 'ComfyUI-Manager');
+      if (await pathAccessible(managerPath)) {
+        await fs.rm(managerPath, { recursive: true, force: true });
+        log.info('Removed extra ComfyUI-Manager directory:', managerPath);
+      }
     } finally {
       tmpFile?.removeCallback();
     }
@@ -78,9 +88,15 @@ export class CmCli implements HasTelemetry {
     log.info(output);
   }
 
-  public async restoreSnapshot(snapshotFile: string, callbacks: ProcessCallbacks) {
+  public async restoreSnapshot(snapshotFile: string, toComfyDir: string, callbacks: ProcessCallbacks) {
     log.info('Restoring snapshot', snapshotFile);
-    const output = await this.runCommandAsync(['restore-snapshot', snapshotFile], callbacks);
+    const output = await this.runCommandAsync(
+      ['restore-snapshot', snapshotFile, '--restore-to', toComfyDir],
+      callbacks,
+      {
+        COMFYUI_PATH: path.join(getAppResourcesPath(), 'ComfyUI'),
+      }
+    );
     log.info(output);
   }
 }
