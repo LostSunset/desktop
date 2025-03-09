@@ -3,19 +3,19 @@
   "productName": "ComfyUI",
   "repository": "github:comfy-org/electron",
   "copyright": "Copyright © 2024 Comfy Org",
-  "version": "0.4.24",
+  "version": "0.4.28",
   "homepage": "https://comfy.org",
   "description": "The best modular GUI to run AI diffusion models.",
   "main": ".vite/build/main.cjs",
   "packageManager": "yarn@4.5.0",
   "type": "module",
   "config": {
-    "frontendVersion": "1.9.19",
+    "frontendVersion": "1.10.18",
     "comfyUI": {
-      "version": "0.3.18",
+      "version": "0.3.23",
       "optionalBranch": ""
     },
-    "managerCommit": "b0035ff4a7fcbe9a766f28a455c7d43dc3b93e12",
+    "managerCommit": "0bd1bf260555b7101a8c5df6071dbf332cfa833d",
     "uvVersion": "0.5.31"
   },
   "scripts": {
@@ -36,6 +36,7 @@
     "make:nvidia": "yarn run make -- --nvidia",
     "notarize": "node debug/notarize.js",
     "package": "yarn run vite:compile && todesktop build --code-sign=false --async",
+    "patch:core:frontend": "node scripts/patchComfyUI.js",
     "postinstall": "node .husky/install.mjs",
     "publish": "yarn run vite:compile && todesktop build",
     "publish:staging": "yarn run vite:compile && todesktop build --config=./todesktop.staging.json --async",
@@ -65,6 +66,7 @@
     "@todesktop/cli": "^1.12.0",
     "@trivago/prettier-plugin-sort-imports": "^5.2.1",
     "@types/adm-zip": "^0.5.5",
+    "@types/diff": "^7",
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/eslint__js": "^8.42.3",
     "@types/node": "^22.10.2",
@@ -73,6 +75,7 @@
     "@types/wait-on": "^5.3.4",
     "@typescript-eslint/eslint-plugin": "^8.20.0",
     "@typescript-eslint/parser": "^8.20.0",
+    "diff": "^7.0.0",
     "electron": "31.3.1",
     "electron-builder": "^25.1.8",
     "eslint": "^9.17.0",
