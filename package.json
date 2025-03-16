@@ -3,19 +3,19 @@
   "productName": "ComfyUI",
   "repository": "github:comfy-org/electron",
   "copyright": "Copyright © 2024 Comfy Org",
-  "version": "0.4.28",
+  "version": "0.4.30",
   "homepage": "https://comfy.org",
   "description": "The best modular GUI to run AI diffusion models.",
   "main": ".vite/build/main.cjs",
   "packageManager": "yarn@4.5.0",
   "type": "module",
   "config": {
-    "frontendVersion": "1.10.18",
+    "frontendVersion": "1.11.8",
     "comfyUI": {
-      "version": "0.3.23",
-      "optionalBranch": ""
+      "version": "0.3.26",
+      "optionalBranch": "desktop-release-mar112025"
     },
-    "managerCommit": "0bd1bf260555b7101a8c5df6071dbf332cfa833d",
+    "managerCommit": "402e2c384f338d0ed0a7fb19caa93f29a0dc35fd",
     "uvVersion": "0.5.31"
   },
   "scripts": {
@@ -36,7 +36,7 @@
     "make:nvidia": "yarn run make -- --nvidia",
     "notarize": "node debug/notarize.js",
     "package": "yarn run vite:compile && todesktop build --code-sign=false --async",
-    "patch:core:frontend": "node scripts/patchComfyUI.js",
+    "patch:core:frontend": "node scripts/patchComfyUI.js requirements",
     "postinstall": "node .husky/install.mjs",
     "publish": "yarn run vite:compile && todesktop build",
     "publish:staging": "yarn run vite:compile && todesktop build --config=./todesktop.staging.json --async",
@@ -105,7 +105,7 @@
     "@todesktop/runtime": "^1.6.4",
     "@types/lodash": "4.17.15",
     "adm-zip": "^0.5.15",
-    "axios": "^1.7.7",
+    "axios": "^1.8.2",
     "dotenv": "^16.4.5",
     "electron-log": "^5.2.0",
     "electron-store": "8.2.0",
