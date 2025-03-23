@@ -4,19 +4,19 @@ import log from 'electron-log/main';
 import fs from 'node:fs';
 import path from 'node:path';
 import si from 'systeminformation';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ComfyConfigManager } from '@/config/comfyConfigManager';
 import { ComfyServerConfig } from '@/config/comfyServerConfig';
 import { IPC_CHANNELS } from '@/constants';
-import { REQUIRED_SPACE, registerPathHandlers } from '@/handlers/pathHandlers';
+import { MAC_REQUIRED_SPACE, WIN_REQUIRED_SPACE, registerPathHandlers } from '@/handlers/pathHandlers';
 import type { SystemPaths } from '@/preload';
 
 import { electronMock } from '../setup';
 
 const DEFAULT_FREE_SPACE = 20 * 1024 * 1024 * 1024; // 20GB
 const LOW_FREE_SPACE = 5 * 1024 * 1024 * 1024; // 5GB
-
+const LOW_FREE_SPACE_MAC = 1 * 1024 * 1024 * 1024; // 1GB
 const MOCK_PATHS = {
   userData: '/mock/user/data',
   logs: '/mock/logs/path',
@@ -24,6 +24,15 @@ const MOCK_PATHS = {
   appData: '/mock/appData',
   appPath: '/mock/app/path',
 } as const;
+
+// Add this mock for OneDrive environment variable
+const MOCK_ONEDRIVE = String.raw`C:\Users\Test\OneDrive`;
+const MOCK_SYSTEM_DRIVE = String.raw`C:`;
+const originalEnv = process.env;
+
+afterEach(() => {
+  process.env = originalEnv;
+});
 
 electronMock.app.getPath = vi.fn((name: string) => {
   switch (name) {
@@ -57,7 +66,7 @@ vi.mock('@/config/comfyConfigManager', () => ({
   },
 }));
 
-const mockDiskSpace = (available: number) => {
+const mockDiskSpace = (available: number, mount = '/') => {
   vi.mocked(si.fsSize).mockResolvedValue([
     {
       fs: 'test',
@@ -65,15 +74,21 @@ const mockDiskSpace = (available: number) => {
       size: 100,
       used: 0,
       available,
-      mount: '/',
+      mount,
       use: 0,
       rw: true,
     },
   ]);
 };
 
-const mockFileSystem = ({ exists = true, writable = true } = {}) => {
+const mockFileSystem = ({ exists = true, writable = true, isDirectory = false, contentLength = 0 } = {}) => {
   vi.mocked(fs.existsSync).mockReturnValue(exists);
+  vi.mocked(fs.statSync).mockReturnValue({
+    isDirectory: () => isDirectory,
+  } as unknown as fs.Stats);
+  vi.mocked(fs.readdirSync).mockReturnValue(
+    Array.from({ length: contentLength }, () => ({ name: 'mock-file' }) as fs.Dirent)
+  );
   if (writable) {
     vi.mocked(fs.accessSync).mockReturnValue();
   } else {
@@ -95,6 +110,32 @@ const getRegisteredHandler = <T extends (...args: never[]) => unknown>(
   return handler as unknown as HandlerType<T>;
 };
 
+type ElectronPathName =
+  | 'home'
+  | 'appData'
+  | 'userData'
+  | 'sessionData'
+  | 'temp'
+  | 'exe'
+  | 'module'
+  | 'desktop'
+  | 'documents'
+  | 'downloads'
+  | 'music'
+  | 'pictures'
+  | 'videos'
+  | 'recent'
+  | 'logs'
+  | 'crashDumps';
+
+const mockPaths = (overrides: Partial<Record<ElectronPathName, string>> = {}) => {
+  vi.mocked(app.getPath).mockImplementation((name: ElectronPathName): string => {
+    if (name in overrides) return overrides[name]!;
+    if (name in MOCK_PATHS) return MOCK_PATHS[name as keyof typeof MOCK_PATHS];
+    return path.normalize(`/mock/${name}`);
+  });
+};
+
 describe('PathHandlers', () => {
   beforeEach(() => {
     vi.mocked(app.getPath).mockImplementation(
@@ -103,7 +144,13 @@ describe('PathHandlers', () => {
     vi.mocked(app.getAppPath).mockReturnValue(MOCK_PATHS.appPath);
     vi.mocked(shell.openPath).mockResolvedValue('');
 
+    process.env = { ...originalEnv, OneDrive: MOCK_ONEDRIVE, SystemDrive: MOCK_SYSTEM_DRIVE };
+
     registerPathHandlers();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
   });
 
   describe('validate-install-path', () => {
@@ -112,30 +159,83 @@ describe('PathHandlers', () => {
     beforeEach(() => {
       validateHandler = getRegisteredHandler(IPC_CHANNELS.VALIDATE_INSTALL_PATH);
       mockDiskSpace(DEFAULT_FREE_SPACE);
+      process.env = { ...originalEnv, OneDrive: MOCK_ONEDRIVE, SystemDrive: MOCK_SYSTEM_DRIVE };
     });
 
-    it('accepts valid install path with sufficient space', async () => {
+    it('Windows: accepts valid install path with sufficient space', async () => {
+      if (process.platform !== 'win32') {
+        return;
+      }
       mockFileSystem({ exists: true, writable: true });
-
-      const result = await validateHandler({}, '/valid/path');
-      expect(result).toEqual({
+      mockDiskSpace(DEFAULT_FREE_SPACE, 'C:');
+      const result = await validateHandler({}, String.raw`C:\valid\path`);
+      expect(result).toMatchObject({
         isValid: true,
         exists: true,
         freeSpace: DEFAULT_FREE_SPACE,
-        requiredSpace: REQUIRED_SPACE,
+        requiredSpace: WIN_REQUIRED_SPACE,
+        isOneDrive: false,
+        isNonDefaultDrive: false,
+        parentMissing: false,
+        cannotWrite: false,
       });
     });
 
-    it('rejects path with insufficient disk space', async () => {
+    it('does not exist if directory is empty', async () => {
+      mockFileSystem({ exists: true, writable: true, contentLength: 0, isDirectory: true });
+
+      const result = await validateHandler({}, '/valid/path');
+      expect(result).toMatchObject({
+        exists: false,
+        freeSpace: DEFAULT_FREE_SPACE,
+        cannotWrite: false,
+      });
+    });
+
+    it('Windows: rejects path with insufficient disk space', async () => {
+      if (process.platform !== 'win32') {
+        return;
+      }
       mockFileSystem({ exists: true, writable: true });
       mockDiskSpace(LOW_FREE_SPACE);
 
       const result = await validateHandler({}, '/low/space/path');
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isValid: false,
         exists: true,
         freeSpace: LOW_FREE_SPACE,
-        requiredSpace: REQUIRED_SPACE,
+        requiredSpace: WIN_REQUIRED_SPACE,
+      });
+    });
+
+    it('Mac: accepts valid install path with sufficient space', async () => {
+      if (process.platform !== 'darwin') {
+        return;
+      }
+      mockFileSystem({ exists: true, writable: true });
+
+      const result = await validateHandler({}, '/valid/path');
+      expect(result).toMatchObject({
+        isValid: true,
+        exists: true,
+        freeSpace: DEFAULT_FREE_SPACE,
+        requiredSpace: MAC_REQUIRED_SPACE,
+      });
+    });
+
+    it('Mac: rejects path with insufficient disk space', async () => {
+      if (process.platform !== 'darwin') {
+        return;
+      }
+      mockFileSystem({ exists: true, writable: true });
+      mockDiskSpace(LOW_FREE_SPACE_MAC);
+
+      const result = await validateHandler({}, '/low/space/path');
+      expect(result).toMatchObject({
+        isValid: false,
+        exists: true,
+        freeSpace: LOW_FREE_SPACE_MAC,
+        requiredSpace: MAC_REQUIRED_SPACE,
       });
     });
 
@@ -143,28 +243,29 @@ describe('PathHandlers', () => {
       mockFileSystem({ exists: false });
 
       const result = await validateHandler({}, '/missing/parent/path');
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isValid: false,
         parentMissing: true,
         freeSpace: DEFAULT_FREE_SPACE,
-        requiredSpace: REQUIRED_SPACE,
       });
     });
 
     it('rejects non-writable path', async () => {
-      mockFileSystem({ exists: true, writable: false });
+      mockFileSystem({ exists: true, writable: false, isDirectory: true, contentLength: 1 });
 
       const result = await validateHandler({}, '/non/writable/path');
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         isValid: false,
         cannotWrite: true,
         exists: true,
         freeSpace: DEFAULT_FREE_SPACE,
-        requiredSpace: REQUIRED_SPACE,
       });
     });
 
-    it('should handle and log errors during validation', async () => {
+    it('Windows: should handle and log errors during validation', async () => {
+      if (process.platform !== 'win32') {
+        return;
+      }
       const mockError = new Error('Test error');
       vi.mocked(fs.existsSync).mockImplementation(() => {
         throw mockError;
@@ -172,13 +273,45 @@ describe('PathHandlers', () => {
       vi.spyOn(log, 'error').mockImplementation(() => {});
 
       const result = await validateHandler({}, '/error/path');
-      expect(result).toEqual({
+
+      expect(result).toMatchObject({
         isValid: false,
         error: 'Error: Test error',
         freeSpace: -1,
-        requiredSpace: REQUIRED_SPACE,
+        requiredSpace: WIN_REQUIRED_SPACE,
       });
       expect(log.error).toHaveBeenCalledWith('Error validating install path:', mockError);
+    });
+
+    it('Windows: OneDrive paths not allowed', async () => {
+      mockFileSystem({ exists: true, writable: true });
+      if (process.platform !== 'win32') {
+        return;
+      }
+
+      const result = await validateHandler({}, String.raw`C:\Users\Test\OneDrive\ComfyUI`);
+
+      expect(result).toMatchObject({
+        isValid: false,
+        isOneDrive: true,
+        requiredSpace: WIN_REQUIRED_SPACE,
+      });
+    });
+
+    it('Windows: non-system drive paths not allowed', async () => {
+      if (process.platform !== 'win32') {
+        return;
+      }
+      mockFileSystem({ exists: true, writable: true });
+      const result = await validateHandler({}, String.raw`D:\ComfyUI`);
+
+      expect(result).toMatchObject({
+        isValid: false,
+        exists: true,
+        isOneDrive: false,
+        isNonDefaultDrive: true,
+        requiredSpace: WIN_REQUIRED_SPACE,
+      });
     });
   });
 
@@ -238,6 +371,17 @@ describe('PathHandlers', () => {
         appPath: '/mock/app/path',
         defaultInstallPath: path.join('/mock/documents', 'ComfyUI'),
       });
+    });
+
+    it('Windows: should remove OneDrive from documents path', async () => {
+      if (process.platform !== 'win32') {
+        return;
+      }
+      mockPaths({ documents: String.raw`C:\Users\Test\OneDrive\Documents` });
+
+      const result = await getSystemPathsHandler({});
+      const expected = String.raw`C:\Users\Test\Documents\ComfyUI`;
+      expect(result.defaultInstallPath).toBe(expected);
     });
   });
 

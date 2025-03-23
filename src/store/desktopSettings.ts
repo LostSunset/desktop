@@ -33,4 +33,6 @@ export type DesktopSettings = {
   windowStyle?: DesktopWindowStyle;
   /** The version of comfyui-electron on which the user last consented to metrics. */
   versionConsentedMetrics?: string;
+  /** Whether the user has generated an image successfully. */
+  hasGeneratedSuccessfully?: boolean;
 };

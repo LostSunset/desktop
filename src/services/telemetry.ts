@@ -8,17 +8,18 @@ import path from 'node:path';
 import si from 'systeminformation';
 
 import { useComfySettings } from '@/config/comfySettings';
+import { DesktopConfig, useDesktopConfig } from '@/store/desktopConfig';
 
 import { IPC_CHANNELS } from '../constants';
 import { AppWindow } from '../main-process/appWindow';
 import { InstallOptions } from '../preload';
-import { DesktopConfig } from '../store/desktopConfig';
 import { compareVersions } from '../utils';
 import { captureSentryException } from './sentry';
 
 let instance: ITelemetry | null = null;
 export interface ITelemetry {
   hasConsent: boolean;
+  loadGenerationCount(config: DesktopConfig): void;
   track(eventName: string, properties?: PropertyDict): void;
   flush(): void;
   registerHandlers(): void;
@@ -43,6 +44,8 @@ export class MixpanelTelemetry implements ITelemetry {
   private readonly queue: MixPanelEvent[] = [];
   private readonly mixpanelClient: mixpanel.Mixpanel;
   private cachedGpuInfo: GpuInfo[] | null = null;
+  private hasGeneratedSuccessfully: boolean = false;
+
   constructor(mixpanelClass: mixpanel.Mixpanel) {
     this.mixpanelClient = mixpanelClass.init(MIXPANEL_TOKEN, {
       geolocate: true,
@@ -82,6 +85,16 @@ export class MixpanelTelemetry implements ITelemetry {
    * @param properties
    */
   track(eventName: string, properties?: PropertyDict): void {
+    if (eventName === 'execution' && properties?.['status'] === 'completed') {
+      if (this.hasGeneratedSuccessfully) {
+        return;
+      } else {
+        // We only update the flag if it's false
+        this.hasGeneratedSuccessfully = true;
+        this.saveGenerationStatus();
+      }
+    }
+
     const defaultProperties = {
       distinct_id: this.distinctId,
       time: Date.now(),
@@ -149,6 +162,18 @@ export class MixpanelTelemetry implements ITelemetry {
     } catch (error) {
       log.error('Failed to get GPU information:', error);
       this.cachedGpuInfo = [];
+    }
+  }
+
+  public loadGenerationCount(config: DesktopConfig): void {
+    this.hasGeneratedSuccessfully = config.get('hasGeneratedSuccessfully') ?? false;
+  }
+
+  private saveGenerationStatus(): void {
+    try {
+      useDesktopConfig().set('hasGeneratedSuccessfully', this.hasGeneratedSuccessfully);
+    } catch (error) {
+      log.debug('Failed to save generation status:', error);
     }
   }
 
