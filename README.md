@@ -200,7 +200,7 @@ You can generate the compiled requirements files by running the following comman
 ## Nvidia Cuda requirements
 uv pip compile assets\ComfyUI\requirements.txt assets\ComfyUI\custom_nodes\ComfyUI-Manager\requirements.txt --emit-index-annotation --emit-index-url --index-strategy unsafe-best-match -o assets\requirements\windows_nvidia.compiled --override assets\override.txt `
 --index-url https://pypi.org/simple `
---extra-index-url https://download.pytorch.org/whl/cu126
+--extra-index-url https://download.pytorch.org/whl/cu128
 
 ## CPU requirements
 uv pip compile assets\ComfyUI\requirements.txt assets\ComfyUI\custom_nodes\ComfyUI-Manager\requirements.txt --emit-index-annotation --emit-index-url --index-strategy unsafe-best-match -o assets\requirements\windows_cpu.compiled `
@@ -285,15 +285,6 @@ We use Todesktop to build and codesign our distributables. To make a new release
 1. Test the build, and if it looks good release it on ToDesktop. Also mark the release as "Latest".
 
 If a build fails for some reason, you can manually retry by running the "Publish All" GH action with a release tag as input.
-
-### Publish Locally
-
-Follow the above steps for local development setup first.
-
-```bash
-# Authentication will be required.
-yarn publish
-```
 
 ## Utility scripts
 

@@ -451,9 +451,11 @@ const electronAPI = {
 
   /**
    * Manually check for application updates.
-   * @returns A promise that resolves to true if an update is available, false otherwise
+   * @param options Optional option args, see todesktop docs.
+   * @returns A promise that resolves to update availability and version.
    */
-  checkForUpdates: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.CHECK_FOR_UPDATES),
+  checkForUpdates: (options?: object): Promise<{ isUpdateAvailable: boolean; version?: string }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CHECK_FOR_UPDATES, options),
 
   /**
    * Restarts and installs updates using todesktop.autoUpdater.restartAndInstall().
